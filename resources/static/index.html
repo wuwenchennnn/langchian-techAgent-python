@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>教育分析 Agent</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.2.31/dist/vue.global.min.js"></script>
+    <style>
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 3px; }
+        textarea { min-height: 44px; max-height: 200px; transition: height 0.2s; }
+        @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+        .animate-pulse { animation: pulse 1.5s infinite; }
+        .delay-100 { animation-delay: 0.1s; }
+        .delay-200 { animation-delay: 0.2s; }
+        .tab-item { padding: 0.5rem 1rem; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 0.5rem; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .tab-item.active { border-bottom-color: #3b82f6; color: #3b82f6; font-weight: 600; }
+        .tab-item:hover { background-color: #f3f4f6; }
+        .tab-close { font-size: 0.75rem; opacity: 0.6; cursor: pointer; }
+        .tab-close:hover { opacity: 1; }
+    </style>
+</head>
+<body>
+<div id="app" class="flex flex-col h-screen bg-gray-50">
+    <header class="bg-white shadow-sm py-3 px-4 flex items-center justify-between">
+        <div class="text-xl font-bold text-blue-600">教育分析 Agent</div>
+        <div class="flex items-center space-x-3">
+            <label class="p-3 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white cursor-pointer" style="width: 50px" title="上传成绩 PDF 或 Excel">
+                <i class="fas fa-file-upload"></i>
+                <input type="file" accept=".pdf,.xlsx,.xls" @change="uploadPdf" class="hidden">
+            </label>
+            <button @click="createNewSession" class="p-3 rounded-lg bg-green-500 hover:bg-green-600 text-white" style="width: 50px" title="新建会话">
+                <i class="fas fa-plus"></i>
+            </button>
+            <button @click="toggleDarkMode" class="p-2 rounded-full hover:bg-gray-100">
+                <i :class="darkMode ? 'fas fa-moon text-gray-600' : 'fas fa-sun text-gray-600'"></i>
+            </button>
+        </div>
+    </header>
+
+    <div class="bg-white border-b border-gray-200 px-4 flex items-center overflow-x-auto">
+        <div v-for="session in sessions" :key="session.id" class="tab-item" :class="{ 'active': currentSessionId === session.id }" @click="switchSession(session.id)">
+            <span>{{ session.name }}</span>
+            <span class="tab-close" @click.stop="closeSession(session.id)" v-if="sessions.length > 1"><i class="fas fa-times"></i></span>
+        </div>
+    </div>
+
+    <main class="flex-1 overflow-y-auto p-4 space-y-6" ref="chatContainer" :class="{ 'bg-gray-800': darkMode }">
+        <div v-for="(msg, idx) in currentMessages" :key="idx" class="max-w-3xl mx-auto">
+            <div :class="['flex', msg.role === 'user' ? 'justify-end' : 'justify-start']">
+                <div :class="['flex items-start space-x-3', msg.role === 'user' ? 'flex-row-reverse space-x-reverse' : '']">
+                    <div :class="['w-8 h-8 rounded-full flex items-center justify-center', msg.role === 'user' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600']">
+                        <i :class="msg.role === 'user' ? 'fas fa-user' : 'fas fa-robot'"></i>
+                    </div>
+                    <div :class="['p-3 rounded-lg max-w-lg', msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-white shadow border border-gray-100']">
+                        <div v-if="msg.role === 'assistant' && msg.isLoading" class="flex space-x-2">
+                            <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse"></div>
+                            <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse delay-100"></div>
+                            <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse delay-200"></div>
+                        </div>
+                        <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer :class="['border-t p-4', darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200']">
+        <div class="max-w-3xl mx-auto">
+            <div class="flex items-center">
+                <textarea v-model="userInput" @keydown.enter.exact.prevent="sendMessage" placeholder="输入您的问题..." :class="['flex-1 border rounded-lg py-3 px-4 focus:outline-none focus:ring-2 resize-none', darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'border-gray-300']" rows="1" ref="textarea" @input="adjustTextareaHeight"></textarea>
+                <button @click="isLoading ? stopResponse() : sendMessage()" :disabled="!userInput.trim() && !isLoading" :class="['ml-2 p-3 rounded-lg text-white', isLoading ? 'bg-red-500' : 'bg-blue-500']">
+                    <i :class="isLoading ? 'fas fa-stop' : 'fas fa-paper-plane'"></i>
+                </button>
+            </div>
+        </div>
+    </footer>
+</div>
+
+<script>
+const {createApp, ref, nextTick, onMounted, watch, computed} = Vue;
+const API_BASE = '';
+
+createApp({
+    setup() {
+        const sessions = ref([]);
+        const currentSessionId = ref(null);
+        const userInput = ref('');
+        const isLoading = ref(false);
+        const chatContainer = ref(null);
+        const textarea = ref(null);
+        const darkMode = ref(false);
+        let controller = null;
+        const STORAGE_SESSIONS_KEY = 'edu-agent-sessions';
+        const STORAGE_CURRENT_SESSION_KEY = 'edu-agent-current-session-id';
+
+        const currentMessages = computed(() => {
+            const s = sessions.value.find(x => x.id === currentSessionId.value);
+            return s ? s.messages : [];
+        });
+
+        const adjustTextareaHeight = () => {
+            const el = textarea.value;
+            el.style.height = 'auto';
+            el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+        };
+
+        const scrollToBottom = () => {
+            nextTick(() => {
+                if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
+            });
+        };
+
+        const toggleDarkMode = () => {
+            darkMode.value = !darkMode.value;
+            localStorage.setItem('darkMode', darkMode.value);
+        };
+
+        const persistSessionState = () => {
+            localStorage.setItem(STORAGE_SESSIONS_KEY, JSON.stringify(sessions.value));
+            localStorage.setItem(STORAGE_CURRENT_SESSION_KEY, currentSessionId.value || '');
+        };
+
+        const restoreSessionState = () => {
+            try {
+                const savedSessions = localStorage.getItem(STORAGE_SESSIONS_KEY);
+                const savedCurrentSessionId = localStorage.getItem(STORAGE_CURRENT_SESSION_KEY);
+                if (!savedSessions) {
+                    return false;
+                }
+                const parsed = JSON.parse(savedSessions);
+                if (!Array.isArray(parsed) || parsed.length === 0) {
+                    return false;
+                }
+                sessions.value = parsed;
+                const hasCurrent = savedCurrentSessionId && parsed.some(s => s.id === savedCurrentSessionId);
+                currentSessionId.value = hasCurrent ? savedCurrentSessionId : parsed[0].id;
+                return true;
+            } catch (e) {
+                return false;
+            }
+        };
+
+        const createNewSession = () => {
+            const id = Date.now().toString();
+            sessions.value.push({
+                id,
+                name: `会话 ${sessions.value.length + 1}`,
+                messages: [{role: 'assistant', content: '你好！我是教育分析顾问。请先上传成绩单，再提问。', isLoading: false}]
+            });
+            currentSessionId.value = id;
+            userInput.value = '';
+            persistSessionState();
+            scrollToBottom();
+            nextTick(() => textarea.value?.focus());
+        };
+
+        const switchSession = (id) => {
+            currentSessionId.value = id;
+            userInput.value = '';
+            persistSessionState();
+            scrollToBottom();
+            nextTick(() => textarea.value?.focus());
+        };
+
+        const closeSession = (id) => {
+            const idx = sessions.value.findIndex(s => s.id === id);
+            if (idx > -1) {
+                // 关闭会话时调用后端删除 Redis 中的聊天记忆和向量数据
+                fetch(`${API_BASE}/ai/session?memoryId=${id}`, {method: 'DELETE'}).catch(() => {});
+                sessions.value.splice(idx, 1);
+                if (currentSessionId.value === id) {
+                    currentSessionId.value = sessions.value[0]?.id || null;
+                    if (!currentSessionId.value) createNewSession();
+                }
+                persistSessionState();
+            }
+        };
+
+        const uploadPdf = async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const name = file.name.toLowerCase();
+            if (!name.endsWith('.pdf') && !name.endsWith('.xlsx') && !name.endsWith('.xls')) {
+                alert('请选择 PDF 或 Excel 格式文件');
+                e.target.value = '';
+                return;
+            }
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('memoryId', currentSessionId.value);
+            try {
+                const res = await fetch(`${API_BASE}/ai/upload`, {method: 'POST', body: formData});
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    const s = sessions.value.find(x => x.id === currentSessionId.value);
+                    if (s) {
+                        s.messages.push({role: 'assistant', content: `成绩单已上传成功（${data.textLength || 0} 字），可直接提问分析。`, isLoading: false});
+                        s.name = `会话 - ${file.name}`;
+                        persistSessionState();
+                    }
+                } else {
+                    alert(data.message || '上传失败');
+                }
+            } catch (err) {
+                alert('上传失败: ' + err.message);
+            }
+            e.target.value = '';
+            scrollToBottom();
+        };
+
+        const sendMessage = async () => {
+            if (!userInput.value.trim() || isLoading.value) return;
+            if (controller) controller.abort();
+            controller = new AbortController();
+
+            const s = sessions.value.find(x => x.id === currentSessionId.value);
+            if (!s) return;
+
+            const msg = userInput.value.trim();
+            // 如果这是该会话的第一条用户消息，用问题内容替换标签名
+            const userMsgCount = s.messages.filter(m => m.role === 'user').length;
+            if (userMsgCount === 0) {
+                s.name = msg.length > 20 ? msg.slice(0, 20) + '…' : msg;
+            }
+            s.messages.push({role: 'user', content: msg, isLoading: false});
+            s.messages.push({role: 'assistant', content: '', isLoading: true});
+
+            userInput.value = '';
+            adjustTextareaHeight();
+            scrollToBottom();
+            isLoading.value = true;
+            persistSessionState();
+
+            try {
+                const res = await fetch(`${API_BASE}/ai/chat?message=${encodeURIComponent(msg)}&memoryId=${currentSessionId.value}`, {signal: controller.signal});
+                const result = await res.json();
+                if (!res.ok) throw new Error(result.message || 'HTTP error');
+                const last = s.messages[s.messages.length - 1];
+                last.content = (result.status === 1 && result.data) ? result.data : result.message || '请求失败';
+                scrollToBottom();
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    const last = s.messages[s.messages.length - 1];
+                    last.content = '错误: ' + error.message;
+                }
+            } finally {
+                const last = s.messages[s.messages.length - 1];
+                last.isLoading = false;
+                isLoading.value = false;
+                controller = null;
+                persistSessionState();
+                scrollToBottom();
+            }
+        };
+
+        const stopResponse = () => {
+            if (controller) {
+                controller.abort();
+                const s = sessions.value.find(x => x.id === currentSessionId.value);
+                if (s && s.messages.length > 0) {
+                    s.messages[s.messages.length - 1].isLoading = false;
+                }
+                isLoading.value = false;
+                controller = null;
+                persistSessionState();
+            }
+        };
+
+        onMounted(() => {
+            darkMode.value = localStorage.getItem('darkMode') === 'true';
+            const restored = restoreSessionState();
+            if (!restored) {
+                createNewSession();
+            }
+        });
+
+        watch(currentMessages, scrollToBottom, {deep: true});
+
+        return {sessions, currentSessionId, currentMessages, userInput, isLoading, darkMode, chatContainer, textarea, sendMessage, stopResponse, toggleDarkMode, adjustTextareaHeight, createNewSession, switchSession, closeSession, uploadPdf};
+    }
+}).mount('#app');
+</script>
+</body>
+</html>
