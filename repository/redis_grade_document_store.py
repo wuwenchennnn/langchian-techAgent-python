@@ -1,5 +1,8 @@
+import json
+from typing import List, Optional
+
 import redis
-from typing import Optional
+
 from config.settings import settings
 
 
@@ -13,28 +16,24 @@ class RedisGradeDocumentStore:
                 password=settings.redis_password,
                 decode_responses=True
             )
-            # 测试连接
             self.redis_client.ping()
             self.connected = True
         except Exception as e:
             print(f"Redis连接失败: {str(e)}")
             self.redis_client = None
             self.connected = False
-    
+
     def store_document(self, memory_id: str, content: str):
-        """存储文档内容到Redis"""
         if not self.connected:
             return
         try:
             key = f"document:grade:{memory_id}"
             self.redis_client.set(key, content)
-            # 设置过期时间为24小时
             self.redis_client.expire(key, 86400)
         except Exception as e:
             print(f"Redis存储失败: {str(e)}")
-    
+
     def get_document(self, memory_id: str) -> Optional[str]:
-        """获取指定memory_id的文档内容"""
         if not self.connected:
             return None
         try:
@@ -43,13 +42,36 @@ class RedisGradeDocumentStore:
         except Exception as e:
             print(f"Redis获取失败: {str(e)}")
             return None
-    
-    def delete_document(self, memory_id: str):
-        """删除指定memory_id的文档内容"""
+
+    def store_chunks(self, memory_id: str, chunks: List[dict]):
         if not self.connected:
             return
         try:
-            key = f"document:grade:{memory_id}"
+            key = f"document:grade:{memory_id}:chunks"
             self.redis_client.delete(key)
+            if chunks:
+                self.redis_client.rpush(key, *[json.dumps(chunk, ensure_ascii=False) for chunk in chunks])
+            self.redis_client.expire(key, 86400)
+        except Exception as e:
+            print(f"Redis切块存储失败: {str(e)}")
+
+    def get_chunks(self, memory_id: str) -> List[dict]:
+        if not self.connected:
+            return []
+        try:
+            key = f"document:grade:{memory_id}:chunks"
+            values = self.redis_client.lrange(key, 0, -1)
+            return [json.loads(value) for value in values]
+        except Exception as e:
+            print(f"Redis切块获取失败: {str(e)}")
+            return []
+
+    def delete_document(self, memory_id: str):
+        if not self.connected:
+            return
+        try:
+            document_key = f"document:grade:{memory_id}"
+            chunks_key = f"document:grade:{memory_id}:chunks"
+            self.redis_client.delete(document_key, chunks_key)
         except Exception as e:
             print(f"Redis删除失败: {str(e)}")

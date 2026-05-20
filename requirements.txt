@@ -6,3 +6,4 @@ redis
 pydantic-settings
 PyPDF2
 python-multipart
+numpy

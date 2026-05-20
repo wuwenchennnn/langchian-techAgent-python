@@ -1,6 +1,6 @@
 # langchain4j-techAgent-python
 
-一个基于 FastAPI 构建的教育成绩分析 Agent 项目，用于上传学生成绩 PDF、提取文本内容、缓存到 Redis，并结合大模型对成绩数据进行分析与建议输出。
+一个基于 FastAPI 构建的教育成绩分析 Agent 项目，用于上传学生成绩 PDF、提取文本内容、进行文本切块与向量化检索，并结合大模型对成绩数据进行分析与建议输出。
 
 ## 项目简介
 
@@ -8,16 +8,19 @@
 
 - 上传学生成绩 PDF
 - 提取成绩文本内容
-- 按会话维度缓存成绩数据
-- 结合系统提示词进行成绩分析问答
+- 对成绩文本进行切块
+- 调用 Embedding 模型生成向量
+- 按会话维度缓存原文、切块与向量
+- 根据用户问题进行相似度检索
+- 结合检索片段与系统提示词进行成绩分析问答
 - 支持清理会话数据与文档数据
 
 当前项目使用：
 
 - `FastAPI` 提供 Web API
 - `PyPDF2` 提取 PDF 文本
-- `Redis` 存储聊天记忆与成绩文档
-- `langchain-openai` 调用 OpenAI 兼容接口
+- `Redis` 存储聊天记忆、成绩原文、文本切块与向量
+- `langchain-openai` 调用 OpenAI 兼容聊天模型与 Embedding 模型
 - `DeepSeek` 兼容接口作为当前默认模型调用方式
 
 ## 项目功能
@@ -25,8 +28,8 @@
 ### 1. 成绩单上传
 通过接口上传 PDF 成绩单，并提取其中的文本内容。
 
-### 2. 成绩文档缓存
-提取后的成绩文本会按 `memoryId` 存储到 Redis 中，便于后续查询和分析。
+### 2. 标准 RAG 检索
+提取后的成绩文本会先按配置切分为多个 chunk，再调用 Embedding 模型生成向量。原文、切块与向量都会按 `memoryId` 存储到 Redis 中，用户提问时会基于问题向量召回最相关的 top-k 文本片段。
 
 ### 3. 智能问答分析
 用户可基于同一个 `memoryId` 发起提问，系统会读取对应成绩内容，并将其与用户问题一起发送给大模型，返回分析建议。
@@ -77,10 +80,15 @@ langchain4j-techAgent-python/
 1. 用户上传成绩 PDF
 2. 服务端使用 `PyPDF2` 解析 PDF 文本
 3. 提取出的文本以 `memoryId` 为键存入 Redis
-4. 用户发起分析问题
-5. 服务端读取对应成绩文本
-6. 将“成绩文本 + 用户问题 + 系统提示词”一起发送给大模型
-7. 返回分析结果
+4. 按 `rag_chunk_size` 与 `rag_chunk_overlap` 切分文本
+5. 调用 Embedding 模型生成每个 chunk 的向量
+6. 将 chunk 内容与向量存入 Redis
+7. 用户发起分析问题
+8. 对用户问题生成 query embedding
+9. 对 query embedding 与文档 chunk embedding 做余弦相似度计算
+10. 召回 top-k 相关片段
+11. 将“检索片段 + 用户问题 + 系统提示词”一起发送给大模型
+12. 返回分析结果
 
 ### 会话数据流程
 
@@ -158,6 +166,12 @@ langchain4j-techAgent-python/
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
 - `OPENAI_MODEL_NAME`
+- `EMBEDDING_API_KEY`
+- `EMBEDDING_BASE_URL`
+- `EMBEDDING_MODEL_NAME`
+- `RAG_TOP_K`
+- `RAG_CHUNK_SIZE`
+- `RAG_CHUNK_OVERLAP`
 - `REDIS_HOST`
 - `REDIS_PORT`
 - `REDIS_DATABASE`
@@ -169,7 +183,10 @@ langchain4j-techAgent-python/
 说明：
 
 - 当前模型调用通过 `langchain-openai` 的 OpenAI 兼容接口实现
+- 聊天模型由 `OPENAI_*` 配置控制
+- Embedding 模型由 `EMBEDDING_*` 配置控制；如果没有单独配置，会默认复用 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 - 当 `OPENAI_BASE_URL=https://api.deepseek.com` 且模型为 `deepseek-chat` 时，实际调用的是 DeepSeek 兼容接口
+- 需要确认所配置的模型服务支持 Embedding 接口，否则上传文档时会在向量化阶段失败
 
 ### 生产环境
 
@@ -181,6 +198,7 @@ langchain4j-techAgent-python/
 
 - `ZHIPU_API_KEY_ENC`
 - `OPENAI_API_KEY_ENC`
+- `EMBEDDING_API_KEY_ENC`
 - `REDIS_PASSWORD_ENC`
 - `DATABASE_PASSWORD_ENC`
 
@@ -233,8 +251,9 @@ uvicorn main:app --reload
 当前 Redis 主要承担两类数据：
 
 ### 1. 成绩文档缓存
-- 键前缀：`document:grade:{memoryId}`
-- 用于缓存成绩单提取后的文本内容
+- 原文键：`document:grade:{memoryId}`
+- 切块与向量键：`document:grade:{memoryId}:chunks`
+- 用于缓存成绩单原文、chunk 文本和 embedding 向量
 
 ### 2. 聊天记忆缓存
 - 键前缀：`chat:memory:{memoryId}`
@@ -263,18 +282,21 @@ uvicorn main:app --reload
 ### 已实现
 - 成绩 PDF 上传
 - PDF 文本提取
-- Redis 文档缓存
+- 文本切块
+- Embedding 向量化
+- Redis 文档与向量缓存
+- 基于余弦相似度的 top-k 检索
 - 成绩分析问答
 - 基础异常处理
 - 开发/生产配置分离
 
 ### 当前简化点
-- `get_relevant_content()` 目前直接返回整份成绩文本，尚未做真正向量检索
+- 当前向量检索使用 Redis 存储向量数据，并在 Python 侧计算余弦相似度，适合小规模文档场景
 - 聊天历史目前主要保存在进程内内存中
 - 生产配置加密方案仍可进一步增强
 
 ### 后续可优化方向
-- 引入真正的向量检索或 RAG 检索流程
+- 接入 Redis Vector、FAISS、Milvus、Chroma 等专业向量检索引擎
 - 将聊天记忆统一接入 Redis
 - 增加 Swagger 使用说明或接口示例
 - 完善鉴权、日志与部署配置
@@ -292,6 +314,7 @@ uvicorn main:app --reload
 - `pydantic-settings`
 - `PyPDF2`
 - `python-multipart`
+- `numpy`
 
 ## 适用场景
 
