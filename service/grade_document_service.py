@@ -1,42 +1,78 @@
-import math
-from typing import List, Optional
+from typing import Optional
 
+import io
+import logging
 import PyPDF2
-from langchain_openai import OpenAIEmbeddings
+import openpyxl
+import xlrd
 
-from config.settings import settings
+from rag import TextSplitter, Retriever
 from repository.redis_grade_document_store import RedisGradeDocumentStore
+
+logger = logging.getLogger(__name__)
 
 
 class GradeDocumentService:
+    """成绩文档服务：负责 PDF/Excel 解析与 RAG 流程编排"""
+
+    PDF_MAGIC = b"%PDF-"
+    XLSX_MAGIC = b"PK\x03\x04"
+
+    SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls"}
+
     def __init__(self):
         self.document_store = RedisGradeDocumentStore()
-        self.embeddings = OpenAIEmbeddings(
-            model=settings.embedding_model_name,
-            base_url=settings.embedding_base_url,
-            api_key=settings.embedding_api_key,
-        )
+        self.splitter = TextSplitter()
+        self.retriever = Retriever()
 
     def upload_and_store(self, memory_id: str, file) -> str:
         if not file:
             raise ValueError("文件不能为空")
 
+        filename = getattr(file, "filename", "")
+        if filename:
+            ext = filename.lower()
+            dot_idx = ext.rfind(".")
+            ext = ext[dot_idx:] if dot_idx != -1 else ""
+            if ext not in self.SUPPORTED_EXTENSIONS:
+                raise ValueError(f"仅支持 PDF / Excel（.xlsx / .xls）文件，当前文件: {filename}")
+
+        file.file.seek(0)
         file_content = file.file.read()
-        extracted_text = self._extract_text_from_pdf(file_content)
+
+        if not file_content:
+            raise ValueError("文件内容为空")
+
+        if file_content.startswith(self.PDF_MAGIC):
+            extracted_text = self._extract_text_from_pdf(file_content)
+        elif file_content.startswith(self.XLSX_MAGIC):
+            extracted_text = self._extract_text_from_xlsx(file_content)
+        else:
+            ext = filename.lower() if filename else ""
+            dot_idx = ext.rfind(".")
+            ext = ext[dot_idx:] if dot_idx != -1 else ""
+            if ext == ".xls":
+                extracted_text = self._extract_text_from_xls(file_content)
+            else:
+                raise ValueError("无法识别的文件格式，请上传 PDF 或 Excel 文件")
+
         self.document_store.store_document(memory_id, extracted_text)
 
-        chunks = self._split_text(extracted_text)
+        chunks = self.splitter.split(extracted_text)
         if chunks:
-            vectors = self.embeddings.embed_documents(chunks)
-            chunk_records = [
-                {
-                    "index": index,
-                    "content": chunk,
-                    "embedding": vector,
-                }
-                for index, (chunk, vector) in enumerate(zip(chunks, vectors))
-            ]
-            self.document_store.store_chunks(memory_id, chunk_records)
+            try:
+                vectors = self.retriever.embed_documents(chunks)
+                chunk_records = [
+                    {
+                        "index": index,
+                        "content": chunk,
+                        "embedding": vector,
+                    }
+                    for index, (chunk, vector) in enumerate(zip(chunks, vectors))
+                ]
+                self.document_store.store_chunks(memory_id, chunk_records)
+            except Exception as e:
+                logger.warning("Embedding 失败（将回退为全文检索）: %s", e)
 
         return extracted_text
 
@@ -45,22 +81,7 @@ class GradeDocumentService:
         if not chunks:
             return self.document_store.get_document(memory_id)
 
-        query_embedding = self.embeddings.embed_query(message)
-        scored_chunks = []
-        for chunk in chunks:
-            score = self._cosine_similarity(query_embedding, chunk.get("embedding", []))
-            scored_chunks.append((score, chunk))
-
-        scored_chunks.sort(key=lambda item: item[0], reverse=True)
-        selected_chunks = [
-            item[1]["content"]
-            for item in scored_chunks[:settings.rag_top_k]
-            if item[1].get("content")
-        ]
-        if not selected_chunks:
-            return None
-
-        return "\n\n---\n\n".join(selected_chunks)
+        return self.retriever.retrieve(message, chunks)
 
     def delete(self, memory_id: str):
         self.document_store.delete_document(memory_id)
@@ -68,7 +89,7 @@ class GradeDocumentService:
     def _extract_text_from_pdf(self, pdf_content: bytes) -> str:
         text = ""
         try:
-            reader = PyPDF2.PdfReader(pdf_content)
+            reader = PyPDF2.PdfReader(io.BytesIO(pdf_content))
             for page_num in range(len(reader.pages)):
                 page = reader.pages[page_num]
                 page_text = page.extract_text() or ""
@@ -77,36 +98,40 @@ class GradeDocumentService:
             raise ValueError(f"PDF解析失败: {str(e)}")
         return text.strip()
 
-    def _split_text(self, text: str) -> List[str]:
-        cleaned_text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
-        if not cleaned_text:
-            return []
+    def _extract_text_from_xlsx(self, xlsx_content: bytes) -> str:
+        text_parts = []
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(xlsx_content), read_only=True, data_only=True)
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                text_parts.append(f"【工作表: {sheet_name}】")
+                for row in ws.iter_rows(values_only=True):
+                    row_text = "\t".join(
+                        str(cell) if cell is not None else ""
+                        for cell in row
+                    )
+                    if row_text.strip():
+                        text_parts.append(row_text)
+            wb.close()
+        except Exception as e:
+            raise ValueError(f"Excel(.xlsx)解析失败: {str(e)}")
+        return "\n".join(text_parts).strip()
 
-        chunk_size = max(settings.rag_chunk_size, 100)
-        overlap = min(max(settings.rag_chunk_overlap, 0), chunk_size - 1)
-        chunks = []
-        start = 0
-
-        while start < len(cleaned_text):
-            end = min(start + chunk_size, len(cleaned_text))
-            chunk = cleaned_text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            if end == len(cleaned_text):
-                break
-            start = end - overlap
-
-        return chunks
-
-    @staticmethod
-    def _cosine_similarity(left: List[float], right: List[float]) -> float:
-        if not left or not right or len(left) != len(right):
-            return 0.0
-
-        dot_product = sum(a * b for a, b in zip(left, right))
-        left_norm = math.sqrt(sum(a * a for a in left))
-        right_norm = math.sqrt(sum(b * b for b in right))
-        if left_norm == 0 or right_norm == 0:
-            return 0.0
-
-        return dot_product / (left_norm * right_norm)
+    def _extract_text_from_xls(self, xls_content: bytes) -> str:
+        text_parts = []
+        try:
+            wb = xlrd.open_workbook(file_contents=xls_content)
+            for sheet_idx in range(wb.nsheets):
+                ws = wb.sheet_by_index(sheet_idx)
+                text_parts.append(f"【工作表: {ws.name}】")
+                for row_idx in range(ws.nrows):
+                    row_values = ws.row_values(row_idx)
+                    row_text = "\t".join(
+                        str(cell) if cell != "" else ""
+                        for cell in row_values
+                    )
+                    if row_text.strip():
+                        text_parts.append(row_text)
+        except Exception as e:
+            raise ValueError(f"Excel(.xls)解析失败: {str(e)}")
+        return "\n".join(text_parts).strip()

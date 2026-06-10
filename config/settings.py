@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import os
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # Embedding 配置
     embedding_api_key: Optional[str] = None
     embedding_api_key_enc: Optional[str] = None
-    embedding_base_url: Optional[str] = None
+    embedding_base_url: str = "https://api.openai.com/v1"
     embedding_model_name: str = "text-embedding-3-small"
     rag_top_k: int = 4
     rag_chunk_size: int = 500
@@ -86,10 +86,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def normalize_embedding_config(self) -> "Settings":
-        if not self.embedding_api_key:
-            self.embedding_api_key = self.openai_api_key
+        # embedding 使用独立的 base_url（默认 OpenAI），不再回退到 openai_base_url
+        # 处理 .env 中 EMBEDDING_BASE_URL= 空值覆盖默认值的情况
         if not self.embedding_base_url:
-            self.embedding_base_url = self.openai_base_url
+            self.embedding_base_url = "https://api.openai.com/v1"
+        # embedding_api_key 未配置时尝试复用 openai_api_key
+        if not self.embedding_api_key and self.openai_api_key:
+            self.embedding_api_key = self.openai_api_key
         return self
 
     @staticmethod
