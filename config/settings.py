@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import os
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     app_env: str = APP_ENV
 
-    # 鏅鸿氨 / 妯″瀷閰嶇疆
+    # 智谱 / 模型配置
     zhipu_api_key: Optional[str] = None
     zhipu_api_key_enc: Optional[str] = None
     openai_api_key: Optional[str] = None
@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.deepseek.com"
     openai_model_name: str = "deepseek-v4-flash"
 
-    # Embedding 閰嶇疆锛堥粯璁や娇鐢ㄦ櫤璋?AI锛?    embedding_api_key: Optional[str] = None
+    # Embedding 配置（默认使用智谱 AI）
+    embedding_api_key: Optional[str] = None
     embedding_api_key_enc: Optional[str] = None
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     embedding_model_name: str = "embedding-3"
@@ -44,7 +45,7 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 500
     rag_chunk_overlap: int = 100
 
-    # Redis 閰嶇疆
+    # Redis 配置
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_database: int = 2
@@ -52,7 +53,8 @@ class Settings(BaseSettings):
     redis_password_enc: Optional[str] = None
     redis_dimension: int = 1024
 
-    # 鏁版嵁搴撻厤缃?    database_url: str = "mysql+pymysql://root:password@localhost:3307/volunteer?charset=utf8mb4"
+    # 数据库配置
+    database_url: str = "mysql+pymysql://root:password@localhost:3307/volunteer?charset=utf8mb4"
     database_username: str = "root"
     database_password: Optional[str] = None
     database_password_enc: Optional[str] = None
@@ -84,9 +86,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def normalize_embedding_config(self) -> "Settings":
-        # 澶勭悊 .env 涓┖鍊艰鐩栭粯璁ゅ€?        if not self.embedding_base_url:
+        # 处理 .env 中空值覆盖默认值
+        if not self.embedding_base_url:
             self.embedding_base_url = "https://open.bigmodel.cn/api/paas/v4"
-        # 浼樺厛绾э細embedding_api_key > zhipu_api_key > openai_api_key
+        # API key 优先级：embedding_api_key > zhipu_api_key > openai_api_key
         if not self.embedding_api_key:
             self.embedding_api_key = self.zhipu_api_key or self.openai_api_key
         return self
