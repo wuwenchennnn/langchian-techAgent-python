@@ -1,10 +1,3 @@
-import sys
-import os
-
-# 添加用户Python包安装路径
-sys.path.append(os.path.expanduser("~"))
-sys.path.append(os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Python", "Python312", "site-packages"))
-
 from fastapi import FastAPI
 from starlette.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
