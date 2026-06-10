@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import os
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     app_env: str = APP_ENV
 
-    # 智谱 / 模型配置
+    # 鏅鸿氨 / 妯″瀷閰嶇疆
     zhipu_api_key: Optional[str] = None
     zhipu_api_key_enc: Optional[str] = None
     openai_api_key: Optional[str] = None
@@ -36,25 +36,23 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.deepseek.com"
     openai_model_name: str = "deepseek-v4-flash"
 
-    # Embedding 配置
-    embedding_api_key: Optional[str] = None
+    # Embedding 閰嶇疆锛堥粯璁や娇鐢ㄦ櫤璋?AI锛?    embedding_api_key: Optional[str] = None
     embedding_api_key_enc: Optional[str] = None
-    embedding_base_url: str = "https://api.openai.com/v1"
-    embedding_model_name: str = "text-embedding-3-small"
+    embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+    embedding_model_name: str = "embedding-3"
     rag_top_k: int = 4
     rag_chunk_size: int = 500
     rag_chunk_overlap: int = 100
 
-    # Redis 配置
+    # Redis 閰嶇疆
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_database: int = 2
     redis_password: Optional[str] = None
     redis_password_enc: Optional[str] = None
-    redis_dimension: int = 1536
+    redis_dimension: int = 1024
 
-    # 数据库配置
-    database_url: str = "mysql+pymysql://root:password@localhost:3307/volunteer?charset=utf8mb4"
+    # 鏁版嵁搴撻厤缃?    database_url: str = "mysql+pymysql://root:password@localhost:3307/volunteer?charset=utf8mb4"
     database_username: str = "root"
     database_password: Optional[str] = None
     database_password_enc: Optional[str] = None
@@ -86,13 +84,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def normalize_embedding_config(self) -> "Settings":
-        # embedding 使用独立的 base_url（默认 OpenAI），不再回退到 openai_base_url
-        # 处理 .env 中 EMBEDDING_BASE_URL= 空值覆盖默认值的情况
-        if not self.embedding_base_url:
-            self.embedding_base_url = "https://api.openai.com/v1"
-        # embedding_api_key 未配置时尝试复用 openai_api_key
-        if not self.embedding_api_key and self.openai_api_key:
-            self.embedding_api_key = self.openai_api_key
+        # 澶勭悊 .env 涓┖鍊艰鐩栭粯璁ゅ€?        if not self.embedding_base_url:
+            self.embedding_base_url = "https://open.bigmodel.cn/api/paas/v4"
+        # 浼樺厛绾э細embedding_api_key > zhipu_api_key > openai_api_key
+        if not self.embedding_api_key:
+            self.embedding_api_key = self.zhipu_api_key or self.openai_api_key
         return self
 
     @staticmethod
