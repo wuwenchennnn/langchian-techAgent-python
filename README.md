@@ -1,4 +1,4 @@
-# langchain4j-techAgent-python
+﻿# langchain4j-techAgent-python
 
 一个基于 FastAPI 构建的教育成绩分析 Agent 项目，用于上传学生成绩 PDF、提取文本内容、进行文本切块与向量化检索，并结合大模型对成绩数据进行分析与建议输出。
 
@@ -185,7 +185,7 @@ langchain4j-techAgent-python/
 - 当前模型调用通过 `langchain-openai` 的 OpenAI 兼容接口实现
 - 聊天模型由 `OPENAI_*` 配置控制
 - Embedding 模型由 `EMBEDDING_*` 配置控制；如果没有单独配置，会默认复用 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
-- 当 `OPENAI_BASE_URL=https://api.deepseek.com` 且模型为 `deepseek-chat` 时，实际调用的是 DeepSeek 兼容接口
+- 当 `OPENAI_BASE_URL=https://api.deepseek.com` 且模型为 `deepseek-v4-flash` 时，实际调用的是 DeepSeek 兼容接口
 - 需要确认所配置的模型服务支持 Embedding 接口，否则上传文档时会在向量化阶段失败
 
 ### 生产环境

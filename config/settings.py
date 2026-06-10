@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import os
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     openai_api_key_enc: Optional[str] = None
     openai_base_url: str = "https://api.deepseek.com"
-    openai_model_name: str = "deepseek-chat"
+    openai_model_name: str = "deepseek-v4-flash"
 
     # Embedding 配置
     embedding_api_key: Optional[str] = None
