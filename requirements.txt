@@ -9,3 +9,4 @@ python-multipart
 numpy
 openpyxl
 xlrd
+langgraph
