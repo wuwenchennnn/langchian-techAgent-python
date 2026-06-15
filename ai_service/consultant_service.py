@@ -12,6 +12,7 @@ from langgraph.prebuilt import create_react_agent
 
 from config.settings import settings
 from service.grade_analyzer import GradeAnalyzer
+from repository.redis_chat_memory_store import RedisChatMemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -131,10 +132,10 @@ def _build_analysis_tools(analyzer: GradeAnalyzer, search_fn: Callable):
 
 
 class ConsultantService:
-    """ReAct 教育分析 Agent"""
+    """ReAct 教育分析 Agent —— 对话记忆持久化至 Redis，支持集群部署"""
 
     def __init__(self):
-        self.memories: dict[str, list] = {}
+        self.memory_store = RedisChatMemoryStore()
 
     def _get_llm(self):
         """获取 LLM 实例"""
@@ -166,7 +167,7 @@ class ConsultantService:
 
         llm = self._get_llm()
         system = SystemMessage(content=SYSTEM_PROMPT)
-        history = list(self._get_history(memory_id))
+        history = self._get_history(memory_id)
         user_msg = HumanMessage(content=message)
 
         logger.info(
@@ -241,25 +242,36 @@ class ConsultantService:
 
         self._save_history(memory_id, message, response_text)
 
-    def _get_history(self, memory_id: str):
-        """获取指定会话的历史消息（最近20条）"""
-        if memory_id not in self.memories:
-            self.memories[memory_id] = []
-        return self.memories[memory_id][-20:]
+    # ---------- 对话记忆（Redis 持久化）----------
+    def _get_history(self, memory_id: str) -> list:
+        """从 Redis 读取会话历史，转换为 LangChain 消息对象（最近 20 条）"""
+        raw = self.memory_store.get_messages(memory_id)
+        # Redis lpush 是倒序存的，反转回正序
+        raw.reverse()
+        # 只取最近 20 条
+        raw = raw[-20:]
+
+        messages = []
+        for item in raw:
+            role = item.get("role", "")
+            content = item.get("content", "")
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+        return messages
 
     def _save_history(self, memory_id: str, user_msg: str, assistant_msg: str):
-        """保存对话历史到内存中"""
-        if memory_id not in self.memories:
-            self.memories[memory_id] = []
-        self.memories[memory_id].append(HumanMessage(content=user_msg))
-        self.memories[memory_id].append(AIMessage(content=assistant_msg))
-        if len(self.memories[memory_id]) > 40:
-            self.memories[memory_id] = self.memories[memory_id][-40:]
+        """保存一轮对话到 Redis"""
+        self.memory_store.save_message(memory_id, "user", user_msg)
+        self.memory_store.save_message(memory_id, "assistant", assistant_msg)
+        # 统计当前轮数
+        total = len(self.memory_store.get_messages(memory_id)) // 2
         logger.info(
             "[对话记忆已保存] memory_id=%s | 累计轮数=%d",
-            memory_id, len(self.memories[memory_id]) // 2
+            memory_id, total
         )
 
     def delete_memory(self, memory_id: str):
-        """删除指定会话的历史记录"""
-        self.memories.pop(memory_id, None)
+        """删除指定会话的 Redis 历史记录"""
+        self.memory_store.delete_messages(memory_id)
