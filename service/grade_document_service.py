@@ -6,14 +6,15 @@ import PyPDF2
 import openpyxl
 import xlrd
 
-from rag import TextSplitter, Retriever
+from rag import TextSplitter, GradeTextSplitter, Retriever
 from repository.redis_grade_document_store import RedisGradeDocumentStore
+from service.grade_analyzer import GradeAnalyzer
 
 logger = logging.getLogger(__name__)
 
 
 class GradeDocumentService:
-    """成绩文档服务：负责 PDF/Excel 解析与 RAG 流程编排"""
+    """成绩文档服务：负责 PDF/Excel 解析、RAG 流程编排与结构化分析"""
 
     PDF_MAGIC = b"%PDF-"
     XLSX_MAGIC = b"PK\x03\x04"
@@ -23,7 +24,9 @@ class GradeDocumentService:
     def __init__(self):
         self.document_store = RedisGradeDocumentStore()
         self.splitter = TextSplitter()
+        self.grade_splitter = GradeTextSplitter()
         self.retriever = Retriever()
+        self._analyzers: dict[str, GradeAnalyzer] = {}
 
     def upload_and_store(self, memory_id: str, file) -> str:
         if not file:
@@ -56,9 +59,23 @@ class GradeDocumentService:
             else:
                 raise ValueError("无法识别的文件格式，请上传 PDF 或 Excel 文件")
 
+        # 结构化分析
+        analyzer = GradeAnalyzer()
+        records = analyzer.parse(extracted_text)
+        logger.info("解析到 %d 条成绩记录，%d 名学生，%d 门科目",
+                     len(records), len(analyzer._student_names), len(analyzer._subjects))
+        self._analyzers[memory_id] = analyzer
+
         self.document_store.store_document(memory_id, extracted_text)
 
-        chunks = self.splitter.split(extracted_text)
+        # 优先使用结构化语义分块，回退到固定分块
+        if records and analyzer._student_names:
+            chunks = self.grade_splitter.split_by_records(
+                records, analyzer._student_names, analyzer._subjects
+            )
+        else:
+            chunks = self.splitter.split(extracted_text)
+
         if chunks:
             try:
                 vectors = self.retriever.embed_documents(chunks)
@@ -76,16 +93,21 @@ class GradeDocumentService:
 
         return extracted_text
 
+    def get_analyzer(self, memory_id: str) -> Optional[GradeAnalyzer]:
+        """获取指定会话的分析器"""
+        return self._analyzers.get(memory_id)
+
     def get_relevant_content(self, memory_id: str, message: str) -> Optional[str]:
         chunks = self.document_store.get_chunks(memory_id)
         if not chunks:
             return self.document_store.get_document(memory_id)
-
         return self.retriever.retrieve(message, chunks)
 
     def delete(self, memory_id: str):
         self.document_store.delete_document(memory_id)
+        self._analyzers.pop(memory_id, None)
 
+    # ---------- PDF / Excel 解析 ----------
     def _extract_text_from_pdf(self, pdf_content: bytes) -> str:
         text = ""
         try:
