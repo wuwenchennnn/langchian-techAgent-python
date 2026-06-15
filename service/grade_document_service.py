@@ -6,7 +6,8 @@ import PyPDF2
 import openpyxl
 import xlrd
 
-from rag import TextSplitter, GradeTextSplitter, Retriever
+from rag import TextSplitter, GradeTextSplitter, Retriever, HybridRetriever
+from rag.reranker import create_reranker
 from repository.redis_grade_document_store import RedisGradeDocumentStore
 from service.grade_analyzer import GradeAnalyzer
 
@@ -25,8 +26,11 @@ class GradeDocumentService:
         self.document_store = RedisGradeDocumentStore()
         self.splitter = TextSplitter()
         self.grade_splitter = GradeTextSplitter()
-        self.retriever = Retriever()
+        self.vector_retriever = Retriever()
+        self.reranker, self._reranker_type = create_reranker()
+        logger.info("[重排序器] 当前使用: %s", self._reranker_type)
         self._analyzers: dict[str, GradeAnalyzer] = {}
+        self._hybrid_retrievers: dict[str, HybridRetriever] = {}
 
     def upload_and_store(self, memory_id: str, file) -> str:
         if not file:
@@ -78,7 +82,7 @@ class GradeDocumentService:
 
         if chunks:
             try:
-                vectors = self.retriever.embed_documents(chunks)
+                vectors = self.vector_retriever.embed_documents(chunks)
                 chunk_records = [
                     {
                         "index": index,
@@ -88,6 +92,13 @@ class GradeDocumentService:
                     for index, (chunk, vector) in enumerate(zip(chunks, vectors))
                 ]
                 self.document_store.store_chunks(memory_id, chunk_records)
+
+                # 构建混合检索引擎的 BM25 索引
+                hybrid = HybridRetriever(self.vector_retriever)
+                hybrid.index_chunks(chunk_records)
+                self._hybrid_retrievers[memory_id] = hybrid
+                logger.info("混合检索索引已就绪，chunk 数=%d", len(chunk_records))
+
             except Exception as e:
                 logger.warning("Embedding 失败（将回退为全文检索）: %s", e)
 
@@ -101,11 +112,38 @@ class GradeDocumentService:
         chunks = self.document_store.get_chunks(memory_id)
         if not chunks:
             return self.document_store.get_document(memory_id)
-        return self.retriever.retrieve(message, chunks)
+
+        # 优先使用混合检索（向量 + BM25 + 重排序）
+        hybrid = self._hybrid_retrievers.get(memory_id)
+        if hybrid:
+            try:
+                # 混合检索召回候选池（放大 3 倍）
+                candidates, scored = hybrid.retrieve(
+                    message,
+                    top_k=None,
+                    candidate_multiplier=3,
+                )
+                if scored:
+                    # 重排序（BGE 或 LLM，由工厂自动选择）
+                    reranked = self.reranker.rerank(message, scored)
+                    contents = [c.get("content", "") for c in reranked]
+                    if contents:
+                        logger.info(
+                            "[混合检索+重排序] memory_id=%s | 候选=%d → 返回=%d | 引擎=%s",
+                            memory_id, len(scored), len(contents), self._reranker_type
+                        )
+                        return "\n\n---\n\n".join(contents)
+
+            except Exception as e:
+                logger.warning("混合检索失败，回退到纯向量检索: %s", e)
+
+        # 兜底：纯向量检索
+        return self.vector_retriever.retrieve(message, chunks)
 
     def delete(self, memory_id: str):
         self.document_store.delete_document(memory_id)
         self._analyzers.pop(memory_id, None)
+        self._hybrid_retrievers.pop(memory_id, None)
 
     # ---------- PDF / Excel 解析 ----------
     def _extract_text_from_pdf(self, pdf_content: bytes) -> str:
