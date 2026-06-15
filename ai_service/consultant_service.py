@@ -27,7 +27,7 @@ SYSTEM_PROMPT = (
     "1. 分析前必须先调用工具获取数据，严禁凭空编造数据\n"
     "2. 如果尚未上传成绩单，请礼貌提示用户先上传\n"
     "3. 当掌握充足信息后，给出具体、可操作的建议\n"
-    "4. 使用简体中文回复"
+    "4. 必须结合对话历史理解用户意图，例如用户说「再详细说说数学」时，应基于上文已分析过的班级数据进行深入展开"
 )
 
 
@@ -169,17 +169,17 @@ class ConsultantService:
         history = list(self._get_history(memory_id))
         user_msg = HumanMessage(content=message)
 
+        logger.info(
+            "[Agent 开始推理] memory_id=%s | 历史轮数=%d | 用户消息=%s",
+            memory_id, len(history) // 2, message[:80]
+        )
+
         if tools:
             agent = create_react_agent(llm, tools)
             full = ""
 
             tool_seq = 0
             tool_timers: dict[str, float] = {}
-
-            logger.info(
-                "[Agent 开始推理] memory_id=%s | 用户消息=%s",
-                memory_id, message[:80]
-            )
 
             async for event in agent.astream_events(
                 {"messages": [system] + history + [user_msg]},
@@ -230,7 +230,6 @@ class ConsultantService:
             )
 
             response_text = full.strip() or "抱歉，无法处理该请求。"
-            # 最终回复已在流中逐 token yield，这里不再重复 yield
         else:
             logger.info(
                 "[Agent 直接回答] memory_id=%s（无可用工具，跳过工具调用）",
@@ -256,6 +255,10 @@ class ConsultantService:
         self.memories[memory_id].append(AIMessage(content=assistant_msg))
         if len(self.memories[memory_id]) > 40:
             self.memories[memory_id] = self.memories[memory_id][-40:]
+        logger.info(
+            "[对话记忆已保存] memory_id=%s | 累计轮数=%d",
+            memory_id, len(self.memories[memory_id]) // 2
+        )
 
     def delete_memory(self, memory_id: str):
         """删除指定会话的历史记录"""
