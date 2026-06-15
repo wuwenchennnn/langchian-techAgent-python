@@ -12,6 +12,7 @@ from langgraph.prebuilt import create_react_agent
 
 from config.settings import settings
 from service.grade_analyzer import GradeAnalyzer
+from service.chart_generator import ChartGenerator
 from repository.redis_chat_memory_store import RedisChatMemoryStore
 
 logger = logging.getLogger(__name__)
@@ -23,12 +24,14 @@ SYSTEM_PROMPT = (
     "1. 识别学生的优势科目与薄弱科目\n"
     "2. 分析成绩趋势与变化\n"
     "3. 发现偏科现象与分数段分布\n"
-    "4. 给出可操作的学习建议与教学改进建议\n\n"
+    "4. 给出可操作的学习建议与教学改进建议\n"
+    "5. 当用户请求图表、趋势图、折线图、柱状图、雷达图或可视化时，调用 get_chart_data 生成图表数据\n\n"
     "规则：\n"
     "1. 分析前必须先调用工具获取数据，严禁凭空编造数据\n"
     "2. 如果尚未上传成绩单，请礼貌提示用户先上传\n"
     "3. 当掌握充足信息后，给出具体、可操作的建议\n"
-    "4. 必须结合对话历史理解用户意图，例如用户说「再详细说说数学」时，应基于上文已分析过的班级数据进行深入展开"
+    "4. 必须结合对话历史理解用户意图\n"
+    "5. 生成图表后，用简短文字总结图表反映的关键信息"
 )
 
 
@@ -71,7 +74,7 @@ def _build_analysis_tools(analyzer: GradeAnalyzer, search_fn: Callable):
         if r.weak_subjects:
             lines.append(f"薄弱科目：{'，'.join(r.weak_subjects)}")
         if r.is_pianke:
-            lines.append("⚠️ 警告：该学生存在明显偏科现象")
+            lines.append("WARNING：该学生存在明显偏科现象")
         return "\n".join(lines)
 
     @tool
@@ -124,10 +127,20 @@ def _build_analysis_tools(analyzer: GradeAnalyzer, search_fn: Callable):
         result = search_fn(query)
         return result if result else "在文档中未找到匹配的内容。"
 
+    @tool
+    def get_chart_data(chart_type: str, student_name: str = "", subject: str = "", n: int = 10) -> str:
+        """生成成绩可视化图表数据，返回前端 ECharts 可渲染的 JSON。chart_type 可选：subject_avg(各科平均分柱状图)/student_radar(学生雷达图)/subject_distribution(分数段分布)/top_students(总分排名)/pianke_gap(偏科差距)/class_overview(班级总览)。可选参数 student_name、subject、n(默认10)"""
+        chart_gen = ChartGenerator(analyzer)
+        result = chart_gen.generate(chart_type, student_name=student_name, subject=subject, n=n)
+        if result:
+            return "::chart::" + result
+        return "图表生成失败"
+
     return [
         get_class_overview, get_student_detail, get_subject_distribution,
         get_top_students, get_pianke_students, get_weakest_subject,
         search_grade_document,
+        get_chart_data,
     ]
 
 
@@ -242,13 +255,10 @@ class ConsultantService:
 
         self._save_history(memory_id, message, response_text)
 
-    # ---------- 对话记忆（Redis 持久化）----------
-    def _get_history(self, memory_id: str) -> list:
+    def _get_history(self, memory_id: str):
         """从 Redis 读取会话历史，转换为 LangChain 消息对象（最近 20 条）"""
         raw = self.memory_store.get_messages(memory_id)
-        # Redis lpush 是倒序存的，反转回正序
         raw.reverse()
-        # 只取最近 20 条
         raw = raw[-20:]
 
         messages = []
@@ -265,7 +275,6 @@ class ConsultantService:
         """保存一轮对话到 Redis"""
         self.memory_store.save_message(memory_id, "user", user_msg)
         self.memory_store.save_message(memory_id, "assistant", assistant_msg)
-        # 统计当前轮数
         total = len(self.memory_store.get_messages(memory_id)) // 2
         logger.info(
             "[对话记忆已保存] memory_id=%s | 累计轮数=%d",

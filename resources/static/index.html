@@ -7,6 +7,7 @@
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/vue@3.2.31/dist/vue.global.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
     <style>
         body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; }
         ::-webkit-scrollbar { width: 6px; }
@@ -22,6 +23,7 @@
         .tab-item:hover { background-color: #f3f4f6; }
         .tab-close { font-size: 0.75rem; opacity: 0.6; cursor: pointer; }
         .tab-close:hover { opacity: 1; }
+        .chart-container { width: 100%; height: 350px; margin-top: 8px; }
     </style>
 </head>
 <body>
@@ -56,13 +58,15 @@
                     <div :class="['w-8 h-8 rounded-full flex items-center justify-center', msg.role === 'user' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600']">
                         <i :class="msg.role === 'user' ? 'fas fa-user' : 'fas fa-robot'"></i>
                     </div>
-                    <div :class="['p-3 rounded-lg max-w-lg', msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-white shadow border border-gray-100']">
+                    <div :class="['p-3 rounded-lg', msg.role === 'user' ? 'bg-blue-500 text-white max-w-lg' : 'bg-white shadow border border-gray-100']" :style="msg.role === 'assistant' && msg.chartData ? 'width:100%;max-width:600px' : 'max-width:600px'">
                         <div v-if="msg.role === 'assistant' && msg.isLoading" class="flex space-x-2">
                             <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse"></div>
                             <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse delay-100"></div>
                             <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse delay-200"></div>
                         </div>
+                        <div v-else-if="msg.role === 'assistant' && msg.chartData" class="whitespace-pre-wrap">{{ msg.content }}</div>
                         <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
+                        <div v-if="msg.role === 'assistant' && msg.chartData" :id="'chart-' + idx" class="chart-container"></div>
                     </div>
                 </div>
             </div>
@@ -72,9 +76,12 @@
     <footer :class="['border-t p-4', darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200']">
         <div class="max-w-3xl mx-auto">
             <div class="flex items-center">
-                <textarea v-model="userInput" @keydown.enter.exact.prevent="sendMessage" placeholder="输入您的问题..." :class="['flex-1 border rounded-lg py-3 px-4 focus:outline-none focus:ring-2 resize-none', darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'border-gray-300']" rows="1" ref="textarea" @input="adjustTextareaHeight"></textarea>
-                <button @click="isLoading ? stopResponse() : sendMessage()" :disabled="!userInput.trim() && !isLoading" :class="['ml-2 p-3 rounded-lg text-white', isLoading ? 'bg-red-500' : 'bg-blue-500']">
-                    <i :class="isLoading ? 'fas fa-stop' : 'fas fa-paper-plane'"></i>
+                <textarea v-model="userInput" @keydown.enter.exact.prevent="sendMessage" @input="adjustTextareaHeight" placeholder="输入你的问题..." rows="1" ref="textarea" class="flex-1 border border-gray-300 rounded-lg p-3 focus:outline-none focus:border-blue-500 resize-none" :disabled="isLoading"></textarea>
+                <button v-if="!isLoading" @click="sendMessage" class="ml-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-3">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+                <button v-if="isLoading" @click="stopResponse" class="ml-3 bg-red-500 hover:bg-red-600 text-white rounded-lg px-4 py-3">
+                    <i class="fas fa-stop"></i>
                 </button>
             </div>
         </div>
@@ -82,7 +89,7 @@
 </div>
 
 <script>
-const {createApp, ref, nextTick, onMounted, watch, computed} = Vue;
+const { createApp, ref, computed, watch, onMounted, nextTick } = Vue;
 const API_BASE = '';
 
 createApp({
@@ -91,94 +98,140 @@ createApp({
         const currentSessionId = ref(null);
         const userInput = ref('');
         const isLoading = ref(false);
+        const darkMode = ref(false);
         const chatContainer = ref(null);
         const textarea = ref(null);
-        const darkMode = ref(false);
         let controller = null;
-        const STORAGE_SESSIONS_KEY = 'edu-agent-sessions';
-        const STORAGE_CURRENT_SESSION_KEY = 'edu-agent-current-session-id';
 
         const currentMessages = computed(() => {
             const s = sessions.value.find(x => x.id === currentSessionId.value);
             return s ? s.messages : [];
         });
 
-        const adjustTextareaHeight = () => {
-            const el = textarea.value;
-            el.style.height = 'auto';
-            el.style.height = Math.min(el.scrollHeight, 200) + 'px';
-        };
-
-        const scrollToBottom = () => {
-            nextTick(() => {
-                if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
-            });
-        };
-
-        const toggleDarkMode = () => {
-            darkMode.value = !darkMode.value;
-            localStorage.setItem('darkMode', darkMode.value);
-        };
+        const generateId = () => Date.now().toString() + Math.random().toString(36).substr(2, 6);
 
         const persistSessionState = () => {
-            localStorage.setItem(STORAGE_SESSIONS_KEY, JSON.stringify(sessions.value));
-            localStorage.setItem(STORAGE_CURRENT_SESSION_KEY, currentSessionId.value || '');
+            try {
+                const data = sessions.value.map(s => ({
+                    id: s.id,
+                    name: s.name,
+                    messages: s.messages.map(m => ({
+                        role: m.role,
+                        content: m.content,
+                        isLoading: false,
+                        chartData: m.chartData || null
+                    }))
+                }));
+                localStorage.setItem('chat_sessions', JSON.stringify(data));
+                localStorage.setItem('current_session_id', currentSessionId.value || '');
+            } catch(e) {}
         };
 
         const restoreSessionState = () => {
             try {
-                const savedSessions = localStorage.getItem(STORAGE_SESSIONS_KEY);
-                const savedCurrentSessionId = localStorage.getItem(STORAGE_CURRENT_SESSION_KEY);
-                if (!savedSessions) {
-                    return false;
+                const data = localStorage.getItem('chat_sessions');
+                const sid = localStorage.getItem('current_session_id');
+                if (data) {
+                    sessions.value = JSON.parse(data);
+                    currentSessionId.value = sid || sessions.value[0]?.id || null;
+                    return sessions.value.length > 0;
                 }
-                const parsed = JSON.parse(savedSessions);
-                if (!Array.isArray(parsed) || parsed.length === 0) {
-                    return false;
+            } catch(e) {}
+            return false;
+        };
+
+        const scrollToBottom = () => {
+            nextTick(() => {
+                if (chatContainer.value) {
+                    chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
                 }
-                sessions.value = parsed;
-                const hasCurrent = savedCurrentSessionId && parsed.some(s => s.id === savedCurrentSessionId);
-                currentSessionId.value = hasCurrent ? savedCurrentSessionId : parsed[0].id;
-                return true;
-            } catch (e) {
-                return false;
+                renderCharts();
+            });
+        };
+
+        const renderCharts = () => {
+            nextTick(() => {
+                const msgs = currentMessages.value;
+                msgs.forEach((msg, idx) => {
+                    if (msg.chartData && msg.role === 'assistant') {
+                        const dom = document.getElementById('chart-' + idx);
+                        if (dom && !dom._echart_rendered) {
+                            try {
+                                const chart = echarts.init(dom);
+                                const cd = msg.chartData;
+                                const option = buildEChartOption(cd);
+                                chart.setOption(option);
+                                dom._echart_rendered = true;
+                                window.addEventListener('resize', () => chart.resize());
+                            } catch(e) {
+                                console.error('Chart render error:', e);
+                            }
+                        }
+                    }
+                });
+            });
+        };
+
+        const buildEChartOption = (cd) => {
+            const baseOption = cd.option || {};
+            const opt = {
+                title: { text: cd.title || '', left: 'center', textStyle: { fontSize: 14 } },
+                tooltip: baseOption.tooltip || { trigger: 'axis' },
+                legend: baseOption.legend || { bottom: 0 },
+                grid: { left: '3%', right: '4%', bottom: baseOption.legend ? '15%' : '3%', containLabel: true },
+            };
+
+            if (cd.type === 'radar') {
+                opt.radar = {
+                    indicator: cd.indicator || [],
+                    shape: (baseOption.radar && baseOption.radar.shape) || 'polygon',
+                };
+                opt.series = [{
+                    type: 'radar',
+                    data: cd.series.map(s => ({ name: s.name, value: s.data }))
+                }];
+            } else {
+                // bar or default
+                opt.xAxis = {
+                    type: 'category',
+                    data: cd.xAxis || [],
+                    axisLabel: { rotate: baseOption.xAxis_rotate || 0 }
+                };
+                opt.yAxis = { type: 'value', name: (baseOption.yAxis && baseOption.yAxis.name) || '' };
+                opt.series = (cd.series || []).map(s => ({
+                    name: s.name,
+                    type: 'bar',
+                    data: s.data,
+                    itemStyle: { borderRadius: [4, 4, 0, 0] }
+                }));
+                if (baseOption.color) {
+                    opt.color = baseOption.color;
+                }
             }
+            return opt;
         };
 
         const createNewSession = () => {
-            const id = Date.now().toString();
-            sessions.value.push({
-                id,
-                name: `会话 ${sessions.value.length + 1}`,
-                messages: [{role: 'assistant', content: '你好！我是教育分析顾问。请先上传成绩单，再提问。', isLoading: false}]
-            });
+            const id = generateId();
+            sessions.value.push({ id, name: '新会话', messages: [] });
             currentSessionId.value = id;
-            userInput.value = '';
             persistSessionState();
-            scrollToBottom();
-            nextTick(() => textarea.value?.focus());
         };
 
         const switchSession = (id) => {
             currentSessionId.value = id;
-            userInput.value = '';
             persistSessionState();
             scrollToBottom();
-            nextTick(() => textarea.value?.focus());
         };
 
         const closeSession = (id) => {
             const idx = sessions.value.findIndex(s => s.id === id);
-            if (idx > -1) {
-                // 关闭会话时调用后端删除 Redis 中的聊天记忆和向量数据
-                fetch(`${API_BASE}/ai/session?memoryId=${id}`, {method: 'DELETE'}).catch(() => {});
-                sessions.value.splice(idx, 1);
-                if (currentSessionId.value === id) {
-                    currentSessionId.value = sessions.value[0]?.id || null;
-                    if (!currentSessionId.value) createNewSession();
-                }
-                persistSessionState();
+            if (idx !== -1) sessions.value.splice(idx, 1);
+            if (currentSessionId.value === id) {
+                currentSessionId.value = sessions.value[0]?.id || null;
+                if (!currentSessionId.value) createNewSession();
             }
+            persistSessionState();
         };
 
         const uploadPdf = async (e) => {
@@ -199,8 +252,8 @@ createApp({
                 if (res.ok && data.success) {
                     const s = sessions.value.find(x => x.id === currentSessionId.value);
                     if (s) {
-                        s.messages.push({role: 'assistant', content: `成绩单已上传成功（${data.textLength || 0} 字），可直接提问分析。`, isLoading: false});
-                        s.name = `会话 - ${file.name}`;
+                        s.messages.push({role: 'assistant', content: '成绩单已上传成功（' + (data.textLength || 0) + ' 字），可直接提问分析。', isLoading: false});
+                        s.name = '会话 - ' + file.name;
                         persistSessionState();
                     }
                 } else {
@@ -222,10 +275,9 @@ createApp({
             if (!s) return;
 
             const msg = userInput.value.trim();
-            // 如果这是该会话的第一条用户消息，用问题内容替换标签名
             const userMsgCount = s.messages.filter(m => m.role === 'user').length;
             if (userMsgCount === 0) {
-                s.name = msg.length > 20 ? msg.slice(0, 20) + '…' : msg;
+                s.name = msg.length > 20 ? msg.slice(0, 20) + '...' : msg;
             }
             s.messages.push({role: 'user', content: msg, isLoading: false});
             s.messages.push({role: 'assistant', content: '', isLoading: true});
@@ -241,7 +293,22 @@ createApp({
                 const result = await res.json();
                 if (!res.ok) throw new Error(result.message || 'HTTP error');
                 const last = s.messages[s.messages.length - 1];
-                last.content = (result.status === 1 && result.data) ? result.data : result.message || '请求失败';
+                const rawText = (result.status === 1 && result.data) ? result.data : result.message || '请求失败';
+                // 检测图表标记 ::chart::{...}
+                const chartMarker = '::chart::';
+                const chartIdx = rawText.indexOf(chartMarker);
+                if (chartIdx !== -1) {
+                    const beforeChart = rawText.substring(0, chartIdx).trim();
+                    const chartJson = rawText.substring(chartIdx + chartMarker.length).trim();
+                    try {
+                        last.chartData = JSON.parse(chartJson);
+                        last.content = beforeChart || '图表已生成';
+                    } catch(e) {
+                        last.content = rawText;
+                    }
+                } else {
+                    last.content = rawText;
+                }
                 scrollToBottom();
             } catch (error) {
                 if (error.name !== 'AbortError') {
@@ -271,17 +338,37 @@ createApp({
             }
         };
 
+        const adjustTextareaHeight = () => {
+            nextTick(() => {
+                if (textarea.value) {
+                    textarea.value.style.height = 'auto';
+                    textarea.value.style.height = Math.min(textarea.value.scrollHeight, 200) + 'px';
+                }
+            });
+        };
+
+        const toggleDarkMode = () => {
+            darkMode.value = !darkMode.value;
+            localStorage.setItem('darkMode', darkMode.value.toString());
+        };
+
         onMounted(() => {
             darkMode.value = localStorage.getItem('darkMode') === 'true';
             const restored = restoreSessionState();
             if (!restored) {
                 createNewSession();
             }
+            scrollToBottom();
         });
 
         watch(currentMessages, scrollToBottom, {deep: true});
 
-        return {sessions, currentSessionId, currentMessages, userInput, isLoading, darkMode, chatContainer, textarea, sendMessage, stopResponse, toggleDarkMode, adjustTextareaHeight, createNewSession, switchSession, closeSession, uploadPdf};
+        return {
+            sessions, currentSessionId, currentMessages, userInput, isLoading, darkMode,
+            chatContainer, textarea,
+            sendMessage, stopResponse, toggleDarkMode, adjustTextareaHeight,
+            createNewSession, switchSession, closeSession, uploadPdf
+        };
     }
 }).mount('#app');
 </script>
