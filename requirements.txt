@@ -10,4 +10,4 @@ numpy
 openpyxl
 xlrd
 langgraph
-FlagEmbedding
+FlagEmbeddinglangsmith
