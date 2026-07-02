@@ -14,6 +14,16 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+
+# —— LangSmith 可观测性配置 ——
+from config.settings import settings as _settings
+if _settings.langsmith_api_key:
+    import os
+    os.environ["LANGCHAIN_API_KEY"] = _settings.langsmith_api_key
+    os.environ["LANGCHAIN_TRACING_V2"] = str(_settings.langsmith_tracing_v2).lower()
+    os.environ["LANGCHAIN_PROJECT"] = _settings.langsmith_project
+    os.environ["LANGCHAIN_ENDPOINT"] = _settings.langsmith_endpoint
+
 # 创建FastAPI应用
 app = FastAPI(
     title="Langchain4j TechAgent",
