@@ -242,6 +242,25 @@ langchain4j-techAgent-python/
 - 当前仓库中的生产加密实现为轻量示例方案
 - 如需正式上线，建议替换为更规范的密钥管理方案
 
+
+### LangSmith 可观测性
+
+项目集成了 [LangSmith](https://smith.langchain.com/) 用于 LLM 全链路追踪与调试。
+
+开发环境配置（.env.dev）：
+
+- LANGSMITH_API_KEY: LangSmith API Key（例如 lsv2_pt_...）
+- LANGSMITH_TRACING_V2: 是否开启 Tracing，默认 	rue
+- LANGSMITH_PROJECT: 项目名称，默认 langchain4j-techAgent-python
+- LANGSMITH_ENDPOINT: API 端点，默认 https://api.smith.langchain.com
+
+启动后可在 [LangSmith 控制台](https://smith.langchain.com/) 查看每次 Agent 调用的完整 Trace，包括：
+
+- LLM 请求/响应内容与时延
+- ReAct Agent 推理链（Thought → Action → Observation）
+- 工具调用（@tool）的入参与返回值
+- Embedding 与检索耗时
+
 ## 本地运行
 
 ### 1. 安装依赖
