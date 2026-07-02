@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     database_password: Optional[str] = None
     database_password_enc: Optional[str] = None
 
+    # LangSmith 可观测性配置
+    langsmith_api_key: Optional[str] = None
+    langsmith_tracing_v2: bool = True
+    langsmith_project: str = "langchain4j-techAgent-python"
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
+
     @model_validator(mode="after")
     def load_encrypted_secrets(self) -> "Settings":
         if self.app_env != "prod":
