@@ -10,7 +10,7 @@
 - 智能列识别引擎：自动适配宽表/长表布局，解析科目、学生、分数
 - 结构化语义分块（按学生 / 科目 / 班级粒度）
 - 调用 Embedding 模型生成向量
-- 基于 `memoryId` 做会话隔离，原文、切块与向量按会话维度缓存
+- 基于（年级 + 班级）桶做数据隔离，原文、解析记录、切块与向量按桶存储；同一桶内支持多份考试（期中/期末/月考）
 - 混合检索（余弦相似度 + BM25 关键词 + RRF 融合）+ BGE 重排序
 - LangGraph ReAct Agent：自主推理并调用分析工具（班级概览、学生详情、偏科检测、图表生成等）
 - SSE 流式对话，逐 token / 逐分析步骤实时返回
@@ -21,7 +21,7 @@
 - `FastAPI` 提供 Web API
 - `LangGraph` 编排 ReAct Agent 推理循环
 - `PyPDF2` / `openpyxl` / `xlrd` 解析 PDF 与 Excel
-- `Redis` 存储聊天记忆、成绩原文、文本切块与向量（全部按 `memoryId` 隔离）
+- `Redis` 存储聊天记忆、成绩原文、解析记录、文本切块与向量（成绩数据按「年级 + 班级」桶隔离）
 - `langchain-openai` 调用 OpenAI 兼容聊天模型与 Embedding 模型
 - `FlagEmbedding` 加载 BGE-Reranker-v2-M3 做本地重排序
 - 默认对话模型：DeepSeek 兼容接口；默认 Embedding 模型：智谱 AI
@@ -49,7 +49,7 @@
 内置 `ChartGenerator`，可将分析数据转为 ECharts 配置 JSON，支持 6 种图表类型：各科平均分柱状图、学生雷达图、分数段分布、总分排名、偏科差距、班级总览。
 
 ### 6. 会话与文档清理
-支持按 `memoryId` 一键清理：聊天记忆 + 成绩文档 + 向量数据 + 分析器实例。
+支持按（年级 + 班级）桶查看/删除成绩数据，按 `memoryId` 清理会话聊天记忆。
 
 ## 项目结构
 
@@ -83,6 +83,7 @@ langchain4j-techAgent-python/
 │   ├── request.py
 │   └── response.py
 ├── service/                    # 业务服务层
+│   ├── bucket_analyzer.py      #   桶分析器（多考试聚合 + 跨考试对比）
 │   ├── chart_generator.py      #   图表数据生成（ECharts JSON）
 │   ├── grade_analyzer.py       #   智能成绩分析引擎（列识别 + 统计）
 │   └── grade_document_service.py
@@ -99,9 +100,9 @@ langchain4j-techAgent-python/
 
 1. 用户上传成绩文档（PDF / `.xlsx` / `.xls`）→ 魔数检测 → 分流到对应解析器
 2. 提取文本 → `GradeAnalyzer` 智能列识别 + 宽表/长表自适应解析 → 生成结构化成绩记录
-3. 原文以 `memoryId` 为键存入 Redis
+3. 原文、解析记录与 chunk 按（年级 + 班级 + 考试名）为键存入 Redis
 4. `GradeTextSplitter` 按"学生 / 科目 / 班级"语义粒度切分为 chunk
-5. 调用 Embedding 模型生成每个 chunk 的向量 → 存入 Redis
+5. 调用 Embedding 模型生成每个 chunk 的向量（chunk 前置「年级班级·考试名」元数据）→ 存入 Redis
 6. `HybridRetriever` 构建 BM25 索引（中文 bigram 分词）
 7. 用户发起分析问题
 8. ReAct Agent 自主推理：判断是否需要调用工具 → 调用工具获取结构化数据 → 汇总生成回复
@@ -110,9 +111,9 @@ langchain4j-techAgent-python/
 
 ### 会话数据流程
 
-- 成绩文档原文 + chunk + 向量（Redis，key 含 `memoryId` 前缀）
+- 成绩文档原文 + 解析记录 + chunk + 向量（Redis，key 含「年级+班级」桶前缀，桶内按考试名区分多份文档）
 - 聊天记忆（Redis List，`chat:memory:{memoryId}`，LRU 保留最近 20 轮）
-- 结构化分析器实例 + 混合检索引擎实例（进程内存，按 `memoryId` 映射）
+- 桶分析器（多考试聚合）实例 + 混合检索引擎实例（进程内存，按桶映射；重启后从 Redis 惰性重建）
 - 全部数据支持一键删除 + TTL 自动过期（86400s）
 
 ## 当前接口说明
@@ -125,33 +126,50 @@ langchain4j-techAgent-python/
 表单参数：
 
 - `memoryId`: 会话 ID
+- `grade`: 年级（如：高一）
+- `className`: 班级（如：3班）
+- `examName`: 考试名称（如：期中考试 / 期末，同一（年级+班级）可上传多份）
 - `file`: PDF / Excel（`.xlsx` / `.xls`）文件
 
 功能：
 
-- 上传并解析文档（自动识别格式）
-- 结构化分析 + 文本提取存入 Redis
+- 上传并解析文档（自动识别格式），按（年级+班级+考试名）存储
+- 同一（年级+班级+考试名）重复上传视为替换该份考试，不影响同桶其他考试
+- 结构化分析 + 文本/记录/向量存入 Redis，并重建桶内聚合检索源
 
-### 2. 成绩分析对话
+### 2. 已有数据列表
+`GET /ai/buckets`
+
+功能：
+
+- 返回所有（年级 + 班级）桶及其考试文档列表（考试名、文件名、上传时间、人数等）
+- 供前端展示已有数据、按桶新建会话、删除文档/桶
+
+### 3. 成绩分析对话
 `GET /ai/chat`
 
 请求参数：
 
 - `memoryId`: 会话 ID
 - `message`: 用户问题
+- `grade`: 年级
+- `className`: 班级（检索与分析仅作用于该（年级+班级）桶）
 
 功能：
 
 - ReAct Agent 自主调用工具获取分析数据
+- 数据含多次考试时，工具支持 `exam` 参数指定考试，支持跨考试对比
 - 非流式返回完整分析结果
 
-### 3. 流式对话（SSE）
+### 4. 流式对话（SSE）
 `GET /ai/chat/stream`
 
 请求参数：
 
 - `memoryId`: 会话 ID
 - `message`: 用户问题
+- `grade`: 年级
+- `className`: 班级
 
 功能：
 
@@ -159,7 +177,7 @@ langchain4j-techAgent-python/
 - 工具调用阶段返回"[正在分析：xxx]"状态提示
 - 支持前端实时展示分析过程
 
-### 4. 关闭会话
+### 5. 关闭会话
 `DELETE /ai/session`
 
 请求参数：
@@ -168,19 +186,33 @@ langchain4j-techAgent-python/
 
 功能：
 
-- 删除 Redis 聊天记忆 + 成绩文档 + 向量数据
-- 清理进程内存中的分析器与检索引擎实例
+- 只清除该会话的 Redis 聊天记忆
+- 桶数据可能被多个会话共享，关闭会话不会删除成绩文档
 
-### 5. 删除成绩文档
+### 6. 删除成绩文档
 `DELETE /ai/document`
 
 请求参数：
 
-- `memoryId`: 会话 ID
+- `grade`: 年级
+- `className`: 班级
+- `examName`: 考试名称
 
 功能：
 
-- 删除该会话对应的成绩文档与向量数据
+- 删除（年级+班级）桶内单份考试的成绩文档与向量数据，并重建桶聚合检索源
+
+### 7. 删除整个桶
+`DELETE /ai/bucket`
+
+请求参数：
+
+- `grade`: 年级
+- `className`: 班级
+
+功能：
+
+- 删除整个（年级+班级）桶及其全部考试文档、向量数据与内存缓存
 
 ## 配置说明
 
@@ -301,8 +333,11 @@ uvicorn main:app --reload
 当前 Redis 主要承担两类数据：
 
 ### 1. 成绩文档缓存
-- 原文键：`document:grade:{memoryId}`
-- 切块与向量键：`document:grade:{memoryId}:chunks`（List 结构，每项为包含 index / content / embedding 的 JSON）
+- 桶标识：`bucket_id = 年级 + "::" + 班级`（原生 UTF-8，如 `高一::3班`，便于在 Redis 工具中直接查看）
+- 桶元数据键：`document:grade:bucket:{bucket_id}`（JSON，含 docs 列表：考试名 / 文件名 / 上传时间 / 人数等）
+- 单份考试键：`document:grade:bucket:{bucket_id}:doc:{考试名}`（原文）、`...:records`（解析记录）、`...:chunks`（切块与向量，每项含 grade / className / examName 元数据）
+- 桶聚合检索源：`document:grade:bucket:{bucket_id}:chunks`（各考试 chunk 平铺合并，上传/删除后自动重建）
+- 服务启动时自动将旧版百分号编码 key（如 `%E4%BA%8C%E5%B9%B4%E7%BA%A7::5%E7%8F%AD`）迁移为可读格式（幂等，不丢失数据）
 
 ### 2. 聊天记忆缓存
 - 键前缀：`chat:memory:{memoryId}`
@@ -311,7 +346,8 @@ uvicorn main:app --reload
 数据生命周期：
 
 - 写入时自动设置 86400 秒 TTL
-- `/ai/session` 接口主动删除 + 清理内存对象
+- `/ai/document` 删除单份考试、`/ai/bucket` 删除整个桶，并同步清理内存对象
+- `/ai/session` 只清聊天记忆，不影响桶数据
 
 ## Agent 架构说明
 
@@ -326,7 +362,10 @@ uvicorn main:app --reload
 | `get_top_students` | 总分前 N 名 |
 | `get_pianke_students` | 偏科学生检测（极差 >30 分） |
 | `get_weakest_subject` | 全班最弱科目 |
+| `compare_exams` | 跨考试对比（按科目 / 学生 / 班级整体，如期中 vs 期末） |
 | `get_chart_data` | 生成 ECharts 图表 JSON |
+
+说明：数据工具均支持可选 `exam` 参数（考试名称），未指定时默认使用最近一次上传的考试；检索片段会标注「年级班级·考试名」。
 
 系统提示词内置于 `ConsultantService`，核心约束：分析前必须先调用工具获取数据，严禁凭空编造。
 
@@ -360,7 +399,6 @@ uvicorn main:app --reload
 - 接入 Redis Vector Search、FAISS、Milvus 等专业向量数据库，支持 ANN 近似检索
 - 增加 Swagger 使用说明或接口示例
 - 完善鉴权、日志与部署配置
-- 支持多文档会话（同一 memoryId 上传多次考试成绩，做跨次对比分析）
 
 ## 依赖说明
 
