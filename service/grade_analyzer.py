@@ -73,6 +73,17 @@ class GradeAnalyzer:
 
         return records
 
+    @classmethod
+    def from_records(cls, records: list[StudentScore]) -> "GradeAnalyzer":
+        """从已解析记录重建分析器（用于服务重启后从 Redis 恢复）"""
+        analyzer = cls()
+        analyzer._parsed_data = list(records)
+        analyzer._student_names = sorted(set(r.student_name for r in records))
+        analyzer._subjects = sorted(set(
+            r.subject for r in records if r.subject not in ("总分", "总成绩", "平均分")
+        ))
+        return analyzer
+
     def _find_header_row(self, lines: list[str]) -> int:
         """扫描前15行，找最可能的表头行"""
         best_idx, best_score = 0, 0
