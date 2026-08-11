@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 import io
 import logging
@@ -8,14 +8,16 @@ import xlrd
 
 from rag import TextSplitter, GradeTextSplitter, Retriever, HybridRetriever
 from rag.reranker import create_reranker
-from repository.redis_grade_document_store import RedisGradeDocumentStore
+from repository.redis_grade_document_store import RedisGradeDocumentStore, bucket_key
+from schemas.analysis import StudentScore
+from service.bucket_analyzer import BucketAnalyzer
 from service.grade_analyzer import GradeAnalyzer
 
 logger = logging.getLogger(__name__)
 
 
 class GradeDocumentService:
-    """成绩文档服务：负责 PDF/Excel 解析、RAG 流程编排与结构化分析"""
+    """成绩文档服务：负责 PDF/Excel 解析、按（年级+班级）桶存储、RAG 流程编排与多考试分析"""
 
     PDF_MAGIC = b"%PDF-"
     XLSX_MAGIC = b"PK\x03\x04"
@@ -29,10 +31,13 @@ class GradeDocumentService:
         self.vector_retriever = Retriever()
         self.reranker, self._reranker_type = create_reranker()
         logger.info("[重排序器] 当前使用: %s", self._reranker_type)
-        self._analyzers: dict[str, GradeAnalyzer] = {}
+        # 内存缓存按桶（bucket_id）隔离
+        self._bucket_analyzers: dict[str, BucketAnalyzer] = {}
         self._hybrid_retrievers: dict[str, HybridRetriever] = {}
 
-    def upload_and_store(self, memory_id: str, file) -> str:
+    # ---------- 上传与存储 ----------
+    def upload_and_store(self, grade: str, class_name: str, exam_name: str, file) -> str:
+        """解析并存储一份考试文档到（年级+班级）桶，随后重建桶内分析器与检索索引"""
         if not file:
             raise ValueError("文件不能为空")
 
@@ -66,13 +71,12 @@ class GradeDocumentService:
         # 结构化分析
         analyzer = GradeAnalyzer()
         records = analyzer.parse(extracted_text)
-        logger.info("解析到 %d 条成绩记录，%d 名学生，%d 门科目",
-                     len(records), len(analyzer._student_names), len(analyzer._subjects))
-        self._analyzers[memory_id] = analyzer
+        logger.info(
+            "解析到 %d 条成绩记录，%d 名学生，%d 门科目",
+            len(records), len(analyzer._student_names), len(analyzer._subjects)
+        )
 
-        self.document_store.store_document(memory_id, extracted_text)
-
-        # 优先使用结构化语义分块，回退到固定分块
+        # 结构化语义分块，优先使用记录分块，回退到固定分块
         if records and analyzer._student_names:
             chunks = self.grade_splitter.split_by_records(
                 records, analyzer._student_names, analyzer._subjects
@@ -80,70 +84,150 @@ class GradeDocumentService:
         else:
             chunks = self.splitter.split(extracted_text)
 
-        if chunks:
+        # 每个 chunk 前置「年级班级·考试名」元数据行，保证召回片段自带考试归属
+        tagged_chunks = [
+            f"【{grade}{class_name}·{exam_name}】\n{chunk}"
+            for chunk in chunks
+        ]
+
+        chunk_records: List[dict] = []
+        if tagged_chunks:
             try:
-                vectors = self.vector_retriever.embed_documents(chunks)
+                vectors = self.vector_retriever.embed_documents(tagged_chunks)
                 chunk_records = [
                     {
                         "index": index,
                         "content": chunk,
                         "embedding": vector,
+                        "grade": grade,
+                        "className": class_name,
+                        "examName": exam_name,
                     }
-                    for index, (chunk, vector) in enumerate(zip(chunks, vectors))
+                    for index, (chunk, vector) in enumerate(zip(tagged_chunks, vectors))
                 ]
-                self.document_store.store_chunks(memory_id, chunk_records)
-
-                # 构建混合检索引擎的 BM25 索引
-                hybrid = HybridRetriever(self.vector_retriever)
-                hybrid.index_chunks(chunk_records)
-                self._hybrid_retrievers[memory_id] = hybrid
-                logger.info("混合检索索引已就绪，chunk 数=%d", len(chunk_records))
-
             except Exception as e:
-                logger.warning("Embedding 失败（将回退为全文检索）: %s", e)
+                logger.warning("Embedding 失败（将退回为全文检索）: %s", e)
 
+        serialized_records = [
+            {"student_name": r.student_name, "subject": r.subject, "score": r.score}
+            for r in records
+        ]
+        self.document_store.store_document(
+            grade, class_name, exam_name,
+            text=extracted_text,
+            records=serialized_records,
+            chunks=chunk_records,
+            filename=filename,
+            student_count=len(analyzer._student_names),
+            subject_count=len(analyzer._subjects),
+        )
+
+        self._rebuild_bucket_state(grade, class_name)
         return extracted_text
 
-    def get_analyzer(self, memory_id: str) -> Optional[GradeAnalyzer]:
-        """获取指定会话的分析器"""
-        return self._analyzers.get(memory_id)
+    # ---------- 桶状态（内存缓存 + Redis 重建） ----------
+    def _rebuild_bucket_state(self, grade: str, class_name: str):
+        """从 Redis 重建桶分析器与混合检索引擎（上传/删除后或缓存缺失时调用）"""
+        bkey = bucket_key(grade, class_name)
+        metadata = self.document_store.get_bucket_metadata(grade, class_name)
+        if metadata and metadata.get("docs"):
+            analyzers = {}
+            exam_order = []
+            for doc in metadata["docs"]:
+                exam_name = doc.get("examName", "")
+                raw_records = self.document_store.get_records(grade, class_name, exam_name)
+                if not raw_records:
+                    continue
+                records = [
+                    StudentScore(
+                        student_name=r.get("student_name", ""),
+                        subject=r.get("subject", ""),
+                        score=float(r.get("score", 0)),
+                    )
+                    for r in raw_records
+                ]
+                analyzers[exam_name] = GradeAnalyzer.from_records(records)
+                exam_order.append(exam_name)
+            self._bucket_analyzers[bkey] = BucketAnalyzer(
+                grade, class_name, analyzers, exam_order
+            )
+        else:
+            self._bucket_analyzers.pop(bkey, None)
 
-    def get_relevant_content(self, memory_id: str, message: str) -> Optional[str]:
-        chunks = self.document_store.get_chunks(memory_id)
+        chunks = self.document_store.get_bucket_chunks(grade, class_name)
+        if chunks:
+            hybrid = HybridRetriever(self.vector_retriever)
+            hybrid.index_chunks(chunks)
+            self._hybrid_retrievers[bkey] = hybrid
+        else:
+            self._hybrid_retrievers.pop(bkey, None)
+
+    def get_analyzer(self, grade: str, class_name: str) -> Optional[BucketAnalyzer]:
+        """获取指定桶的分析器；缓存缺失时从 Redis 惰性重建"""
+        bkey = bucket_key(grade, class_name)
+        analyzer = self._bucket_analyzers.get(bkey)
+        if analyzer is None:
+            metadata = self.document_store.get_bucket_metadata(grade, class_name)
+            if not metadata or not metadata.get("docs"):
+                return None
+            self._rebuild_bucket_state(grade, class_name)
+            analyzer = self._bucket_analyzers.get(bkey)
+        return analyzer
+
+    def _get_hybrid(self, grade: str, class_name: str, chunks: List[dict]) -> Optional[HybridRetriever]:
+        bkey = bucket_key(grade, class_name)
+        hybrid = self._hybrid_retrievers.get(bkey)
+        if hybrid is None and chunks:
+            hybrid = HybridRetriever(self.vector_retriever)
+            hybrid.index_chunks(chunks)
+            self._hybrid_retrievers[bkey] = hybrid
+        return hybrid
+
+    def get_relevant_content(self, grade: str, class_name: str, message: str) -> Optional[str]:
+        """按桶召回相关片段（向量 + BM25 + RRF + 重排序），无向量时退回桶内全文"""
+        chunks = self.document_store.get_bucket_chunks(grade, class_name)
         if not chunks:
-            return self.document_store.get_document(memory_id)
+            return self.document_store.get_bucket_full_text(grade, class_name)
 
-        # 优先使用混合检索（向量 + BM25 + 重排序）
-        hybrid = self._hybrid_retrievers.get(memory_id)
+        hybrid = self._get_hybrid(grade, class_name, chunks)
         if hybrid:
             try:
-                # 混合检索召回候选池（放大 3 倍）
                 candidates, scored = hybrid.retrieve(
                     message,
                     top_k=None,
                     candidate_multiplier=3,
                 )
                 if scored:
-                    # 重排序（BGE 或 LLM，由工厂自动选择）
                     reranked = self.reranker.rerank(message, scored)
                     contents = [c.get("content", "") for c in reranked]
                     if contents:
                         logger.info(
-                            "[混合检索+重排序] memory_id=%s | 候选=%d → 返回=%d | 引擎=%s",
-                            memory_id, len(scored), len(contents), self._reranker_type
+                            "[混合检索+重排序] bucket=%s | 候选=%d → 返回=%d | 引擎=%s",
+                            bucket_key(grade, class_name), len(scored), len(contents),
+                            self._reranker_type
                         )
                         return "\n\n---\n\n".join(contents)
-
             except Exception as e:
                 logger.warning("混合检索失败，回退到纯向量检索: %s", e)
 
         # 兜底：纯向量检索
         return self.vector_retriever.retrieve(message, chunks)
 
-    def delete(self, memory_id: str):
-        self.document_store.delete_document(memory_id)
-        self._analyzers.pop(memory_id, None)
-        self._hybrid_retrievers.pop(memory_id, None)
+    # ---------- 桶列表与删除 ----------
+    def list_buckets(self) -> List[dict]:
+        return self.document_store.list_buckets()
+
+    def delete_document(self, grade: str, class_name: str, exam_name: str):
+        """删除桶内单份考试文档并重建桶状态"""
+        self.document_store.delete_document(grade, class_name, exam_name)
+        self._rebuild_bucket_state(grade, class_name)
+
+    def delete_bucket(self, grade: str, class_name: str):
+        """删除整个桶（文档 + 聚合检索源 + 内存缓存）"""
+        self.document_store.delete_bucket(grade, class_name)
+        bkey = bucket_key(grade, class_name)
+        self._bucket_analyzers.pop(bkey, None)
+        self._hybrid_retrievers.pop(bkey, None)
 
     # ---------- PDF / Excel 解析 ----------
     def _extract_text_from_pdf(self, pdf_content: bytes) -> str:

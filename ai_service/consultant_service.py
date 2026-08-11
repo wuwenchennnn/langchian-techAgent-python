@@ -11,7 +11,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.prebuilt import create_react_agent
 
 from config.settings import settings
-from service.grade_analyzer import GradeAnalyzer
+from service.bucket_analyzer import BucketAnalyzer
 from service.chart_generator import ChartGenerator
 from repository.redis_chat_memory_store import RedisChatMemoryStore
 
@@ -31,20 +31,40 @@ SYSTEM_PROMPT = (
     "2. 如果尚未上传成绩单，请礼貌提示用户先上传\n"
     "3. 当掌握充足信息后，给出具体、可操作的建议\n"
     "4. 必须结合对话历史理解用户意图\n"
-    "5. 生成图表后，用简短文字总结图表反映的关键信息"
+    "5. 生成图表后，用简短文字总结图表反映的关键信息\n"
+    "6. 数据可能包含多次考试（如期中、期末、月考）。回答涉及具体数据时，必须注明考试名称\n"
+    "7. 用户询问两次或多次考试的成绩对比、变化趋势时，调用 compare_exams 工具\n"
+    "8. 分析工具均支持可选 exam 参数（考试名称），未指定时默认使用最近一次上传的考试\n"
+    "9. 检索片段会标注【年级班级·考试名】，引用时注意区分考试"
 )
 
 
-def _build_analysis_tools(analyzer: GradeAnalyzer, search_fn: Callable):
-    """基于 GradeAnalyzer 构建 ReAct 工具集"""
+def _resolve_exam(analyzer: BucketAnalyzer, exam: str):
+    """解析考试参数：空值返回 (None, None) 表示使用最近一次；未找到返回 (None, 错误信息)"""
+    exam = (exam or "").strip()
+    if not exam:
+        return None, None
+    resolved = analyzer.resolve_exam(exam)
+    if resolved is None:
+        available = "、".join(analyzer.list_exams()) or "（暂无）"
+        return None, f"未找到考试「{exam}」。当前桶内的考试：{available}"
+    return resolved, None
+
+
+def _build_analysis_tools(analyzer: BucketAnalyzer, search_fn: Callable):
+    """基于 BucketAnalyzer 构建 ReAct 工具集（支持按考试选择与跨考试对比）"""
 
     @tool
-    def get_class_overview() -> str:
-        """获取班级整体成绩概览：各科平均分、最高/最低分、及格率、优秀率、总分前5名"""
-        ov = analyzer.get_class_overview()
+    def get_class_overview(exam: str = "") -> str:
+        """获取指定考试（默认最近一次）的班级整体成绩概览：各科平均分、最高/最低分、及格率、优秀率、总分前5名。参数 exam：考试名称（如期中、期末），可留空"""
+        resolved, err = _resolve_exam(analyzer, exam)
+        if err:
+            return err
+        ov = analyzer.get_class_overview(exam=resolved)
         if not ov:
             return "暂无成绩数据，请先上传成绩单。"
-        lines = [f"共 {ov.total_students} 名学生，{len(ov.subjects)} 门科目。", ""]
+        exam_label = f"【{resolved or analyzer.latest_exam()}】" if analyzer.list_exams() else ""
+        lines = [f"{exam_label}共 {ov.total_students} 名学生，{len(ov.subjects)} 门科目。", ""]
         for ss in ov.subject_stats:
             lines.append(
                 f"{ss.subject}：平均分={ss.average}，最高分={ss.max_score}，最低分={ss.min_score}，"
@@ -57,11 +77,14 @@ def _build_analysis_tools(analyzer: GradeAnalyzer, search_fn: Callable):
         return "\n".join(lines)
 
     @tool
-    def get_student_detail(student_name: str) -> str:
-        """获取指定学生的详细分析：各科成绩、排名、优势/薄弱科目、是否偏科。参数：student_name"""
-        r = analyzer.get_student_detail(student_name)
+    def get_student_detail(student_name: str, exam: str = "") -> str:
+        """获取指定学生在指定考试（默认最近一次）的详细分析：各科成绩、排名、优势/薄弱科目、是否偏科。参数：student_name、exam（考试名称，可留空）"""
+        resolved, err = _resolve_exam(analyzer, exam)
+        if err:
+            return err
+        r = analyzer.get_student_detail(student_name, exam=resolved)
         if not r:
-            names = "，".join(analyzer._student_names[:20])
+            names = "，".join(analyzer.student_names(exam=resolved)[:20])
             return f"未找到学生「{student_name}」。当前成绩单中的学生：{names}"
         lines = [
             f"【{r.student_name}】总分={r.total_score}，平均分={r.average_score}，排名={r.rank}/{r.total_students}",
@@ -78,20 +101,26 @@ def _build_analysis_tools(analyzer: GradeAnalyzer, search_fn: Callable):
         return "\n".join(lines)
 
     @tool
-    def get_subject_distribution(subject: str) -> str:
-        """获取指定科目的分数段分布。参数：科目名称"""
-        d = analyzer.get_subject_distribution(subject)
+    def get_subject_distribution(subject: str, exam: str = "") -> str:
+        """获取指定科目在指定考试（默认最近一次）的分数段分布。参数：subject（科目名称）、exam（考试名称，可留空）"""
+        resolved, err = _resolve_exam(analyzer, exam)
+        if err:
+            return err
+        d = analyzer.get_subject_distribution(subject, exam=resolved)
         if not d:
-            return f"未找到科目「{subject}」。当前可用的科目：{'，'.join(analyzer._subjects)}"
+            return f"未找到科目「{subject}」。当前可用的科目：{'，'.join(analyzer.subjects(exam=resolved))}"
         lines = [f"【{d['subject']}】共 {d['count']} 人，平均分={d['average']}", "分数段分布："]
         for seg, count in d["distribution"].items():
             lines.append(f"  {seg}：{count} 人")
         return "\n".join(lines)
 
     @tool
-    def get_top_students(n: int = 5) -> str:
-        """获取总分前 N 名学生。参数：n（默认5）"""
-        items = analyzer.get_top_students(n)
+    def get_top_students(n: int = 5, exam: str = "") -> str:
+        """获取指定考试（默认最近一次）总分前 N 名学生。参数：n（默认5）、exam（考试名称，可留空）"""
+        resolved, err = _resolve_exam(analyzer, exam)
+        if err:
+            return err
+        items = analyzer.get_top_students(n, exam=resolved)
         if not items:
             return "暂无成绩数据。"
         lines = [f"总分前 {n} 名："]
@@ -100,20 +129,26 @@ def _build_analysis_tools(analyzer: GradeAnalyzer, search_fn: Callable):
         return "\n".join(lines)
 
     @tool
-    def get_pianke_students() -> str:
-        """检测存在明显偏科的学生（最高分与最低分差距超过30分）"""
-        names = analyzer.get_pianke_students()
+    def get_pianke_students(exam: str = "") -> str:
+        """检测指定考试（默认最近一次）中存在明显偏科的学生（最高分与最低分差距超过30分）。参数：exam（考试名称，可留空）"""
+        resolved, err = _resolve_exam(analyzer, exam)
+        if err:
+            return err
+        names = analyzer.get_pianke_students(exam=resolved)
         if not names:
             return "未检测到明显偏科的学生。"
         return f"共 {len(names)} 名学生可能存在偏科：\n" + "\n".join(f"  - {n}" for n in names)
 
     @tool
-    def get_weakest_subject() -> str:
-        """找出全班平均分最低的科目"""
-        subj = analyzer.get_weakest_subject()
+    def get_weakest_subject(exam: str = "") -> str:
+        """找出指定考试（默认最近一次）全班平均分最低的科目。参数：exam（考试名称，可留空）"""
+        resolved, err = _resolve_exam(analyzer, exam)
+        if err:
+            return err
+        subj = analyzer.get_weakest_subject(exam=resolved)
         if not subj:
             return "暂无成绩数据。"
-        dist = analyzer.get_subject_distribution(subj)
+        dist = analyzer.get_subject_distribution(subj, exam=resolved)
         lines = [f"全班最薄弱科目：{subj}"]
         if dist:
             lines.append(f"  平均分={dist['average']}，共 {dist['count']} 人")
@@ -123,15 +158,29 @@ def _build_analysis_tools(analyzer: GradeAnalyzer, search_fn: Callable):
 
     @tool
     def search_grade_document(query: str) -> str:
-        """在原始成绩单中搜索相关信息。参数：搜索关键词"""
+        """在当前（年级+班级）桶的原始成绩单中搜索相关信息。参数：搜索关键词"""
         result = search_fn(query)
         return result if result else "在文档中未找到匹配的内容。"
 
     @tool
-    def get_chart_data(chart_type: str, student_name: str = "", subject: str = "", n: int = 10) -> str:
-        """生成成绩可视化图表数据，返回前端 ECharts 可渲染的 JSON。chart_type 可选：subject_avg(各科平均分柱状图)/student_radar(学生雷达图)/subject_distribution(分数段分布)/top_students(总分排名)/pianke_gap(偏科差距)/class_overview(班级总览)。可选参数 student_name、subject、n(默认10)"""
+    def compare_exams(subject: str = "", student_name: str = "") -> str:
+        """对比同一班级不同考试（期中/期末/月考等）的成绩：可按科目或学生对比，不传参数时对比班级整体。参数：subject（科目名称）、student_name（学生姓名）"""
+        result = analyzer.compare_exams(subject=subject, student_name=student_name)
+        if not result:
+            return "暂无多次考试数据可对比。"
+        return result
+
+    @tool
+    def get_chart_data(chart_type: str, student_name: str = "", subject: str = "", exam: str = "", n: int = 10) -> str:
+        """生成成绩可视化图表数据，返回前端 ECharts 可渲染的 JSON。chart_type 可选：subject_avg(各科平均分柱状图)/student_radar(学生雷达图)/subject_distribution(分数段分布)/top_students(总分排名)/pianke_gap(偏科差距)/class_overview(班级总览)/exam_compare(各次考试对比)。可选参数 student_name、subject、exam（考试名称）、n(默认10)"""
         chart_gen = ChartGenerator(analyzer)
-        result = chart_gen.generate(chart_type, student_name=student_name, subject=subject, n=n)
+        result = chart_gen.generate(
+            chart_type,
+            student_name=student_name,
+            subject=subject,
+            exam=exam,
+            n=n,
+        )
         if result:
             return "::chart::" + result
         return "图表生成失败"
@@ -140,6 +189,7 @@ def _build_analysis_tools(analyzer: GradeAnalyzer, search_fn: Callable):
         get_class_overview, get_student_detail, get_subject_distribution,
         get_top_students, get_pianke_students, get_weakest_subject,
         search_grade_document,
+        compare_exams,
         get_chart_data,
     ]
 
@@ -160,7 +210,7 @@ class ConsultantService:
         )
 
     async def chat(self, memory_id: str, message: str,
-                   analyzer: Optional[GradeAnalyzer] = None,
+                   analyzer: Optional[BucketAnalyzer] = None,
                    search_fn: Optional[Callable] = None) -> str:
         """非流式对话：通过 ReAct Agent 一次性返回完整回复"""
         result = []
@@ -169,7 +219,7 @@ class ConsultantService:
         return "".join(result)
 
     async def chat_stream(self, memory_id: str, message: str,
-                           analyzer: Optional[GradeAnalyzer] = None,
+                           analyzer: Optional[BucketAnalyzer] = None,
                            search_fn: Optional[Callable] = None):
         """SSE 流式对话：逐 token 返回 ReAct Agent 的推理过程"""
 
@@ -237,6 +287,14 @@ class ConsultantService:
                     )
                     if output:
                         yield f"\n[分析结果已获取]\n"
+                        # 图表工具：直接把有效图表数据注入回复流，避免依赖模型回显导致前端无法渲染
+                        if name == "get_chart_data" and output.startswith("::chart::"):
+                            try:
+                                chart_obj = json.loads(output[len("::chart::"):])
+                                if chart_obj.get("type"):
+                                    yield f"\n{output}\n"
+                            except Exception:
+                                pass
 
             logger.info(
                 "[Agent 推理结束] memory_id=%s | 共调用 %d 个工具 | 回复长度=%d",
