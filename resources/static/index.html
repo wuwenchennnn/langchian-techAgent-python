@@ -3,144 +3,735 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>教育分析 Agent</title>
+    <title>教育分析 Agent 管理系统</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/vue@3.2.31/dist/vue.global.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
     <style>
         body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; }
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 3px; }
         textarea { min-height: 44px; max-height: 200px; transition: height 0.2s; }
         @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
         .animate-pulse { animation: pulse 1.5s infinite; }
         .delay-100 { animation-delay: 0.1s; }
         .delay-200 { animation-delay: 0.2s; }
-        .tab-item { padding: 0.5rem 1rem; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 0.5rem; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .tab-item.active { border-bottom-color: #3b82f6; color: #3b82f6; font-weight: 600; }
-        .tab-item:hover { background-color: #f3f4f6; }
-        .tab-close { font-size: 0.75rem; opacity: 0.6; cursor: pointer; }
-        .tab-close:hover { opacity: 1; }
         .chart-container { width: 100%; height: 350px; margin-top: 8px; }
+        .scope-badge { font-size: 0.7rem; background: #eff6ff; color: #2563eb; border-radius: 9999px; padding: 0.1rem 0.5rem; white-space: nowrap; }
+        .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
+        .modal-card { background: #fff; border-radius: 0.75rem; box-shadow: 0 20px 50px rgba(0,0,0,0.2); width: 92%; max-width: 480px; padding: 1.25rem; }
+        .modal-title { font-size: 1.05rem; font-weight: 600; margin-bottom: 1rem; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+        .btn { padding: 0.45rem 0.9rem; border-radius: 0.5rem; font-size: 0.875rem; cursor: pointer; border: none; }
+        .btn-primary { background: #3b82f6; color: #fff; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-secondary { background: #e5e7eb; color: #374151; }
+        .btn-secondary:hover { background: #d1d5db; }
+        .btn-danger { background: #ef4444; color: #fff; }
+        .btn-danger:hover { background: #dc2626; }
+        .field { margin-bottom: 0.75rem; }
+        .field label { display: block; font-size: 0.8rem; color: #4b5563; margin-bottom: 0.25rem; }
+        .field input { width: 100%; border: 1px solid #d1d5db; border-radius: 0.5rem; padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+        .field input:focus { outline: none; border-color: #3b82f6; }
+        .toast-container { position: fixed; top: 1rem; right: 1rem; z-index: 100; display: flex; flex-direction: column; gap: 0.5rem; }
+        .toast { padding: 0.6rem 1rem; border-radius: 0.5rem; font-size: 0.875rem; color: #fff; box-shadow: 0 10px 30px rgba(0,0,0,0.15); animation: toast-in 0.2s ease; }
+        .toast-success { background: #16a34a; }
+        .toast-error { background: #dc2626; }
+        @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+        .markdown-body { line-height: 1.7; font-size: 0.9rem; word-break: break-word; }
+        .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { font-weight: 700; margin: 0.8rem 0 0.4rem; }
+        .markdown-body h1 { font-size: 1.15rem; }
+        .markdown-body h2 { font-size: 1.05rem; }
+        .markdown-body h3 { font-size: 1rem; }
+        .markdown-body p { margin: 0.4rem 0; }
+        .markdown-body ul, .markdown-body ol { padding-left: 1.4rem; margin: 0.4rem 0; }
+        .markdown-body li { margin: 0.2rem 0; }
+        .markdown-body table { border-collapse: collapse; width: 100%; margin: 0.6rem 0; font-size: 0.85rem; }
+        .markdown-body th, .markdown-body td { border: 1px solid #e5e7eb; padding: 0.4rem 0.6rem; text-align: left; }
+        .markdown-body th { background: #f8fafc; font-weight: 600; }
+        .markdown-body blockquote { border-left: 3px solid #bfdbfe; padding-left: 0.8rem; margin: 0.5rem 0; color: #475569; }
+        .markdown-body code { background: #f1f5f9; padding: 0.1rem 0.35rem; border-radius: 0.25rem; font-size: 0.85em; }
+        .tool-step { display: inline-block; background: #eef2ff; color: #4f46e5; border-radius: 9999px; padding: 0.1rem 0.6rem; font-size: 0.75rem; margin: 0.15rem 0.1rem; }
+        .tool-step-done { background: #ecfdf5; color: #059669; }
+        .dark-bubble .markdown-body { color: #e5e7eb; }
+        .dark-bubble .markdown-body th, .dark-bubble .markdown-body td { border-color: #4b5563; }
+        .dark-bubble .markdown-body th { background: #374151; }
+        .dark-bubble .markdown-body blockquote { border-left-color: #3b82f6; color: #cbd5e1; }
+        .dark-bubble .markdown-body code { background: #374151; }
+        .dark-bubble .tool-step { background: #3730a3; color: #c7d2fe; }
+        .dark-bubble .tool-step-done { background: #065f46; color: #a7f3d0; }
     </style>
 </head>
 <body>
-<div id="app" class="flex flex-col h-screen bg-gray-50">
-    <header class="bg-white shadow-sm py-3 px-4 flex items-center justify-between">
-        <div class="text-xl font-bold text-blue-600">教育分析 Agent</div>
-        <div class="flex items-center space-x-3">
-            <label class="p-3 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white cursor-pointer" style="width: 50px" title="上传成绩 PDF 或 Excel">
-                <i class="fas fa-file-upload"></i>
-                <input type="file" accept=".pdf,.xlsx,.xls" @change="uploadPdf" class="hidden">
-            </label>
-            <button @click="createNewSession" class="p-3 rounded-lg bg-green-500 hover:bg-green-600 text-white" style="width: 50px" title="新建会话">
-                <i class="fas fa-plus"></i>
-            </button>
-            <button @click="toggleDarkMode" class="p-2 rounded-full hover:bg-gray-100">
-                <i :class="darkMode ? 'fas fa-moon text-gray-600' : 'fas fa-sun text-gray-600'"></i>
-            </button>
+<div id="app" class="flex h-screen overflow-hidden bg-gray-100">
+    <!-- 左侧导航栏 -->
+    <aside class="flex flex-col bg-slate-800 text-gray-300 transition-all duration-200" :class="store.collapsed ? 'w-16' : 'w-56'">
+        <div class="h-14 flex items-center justify-center gap-2 px-3 border-b border-slate-700">
+            <i class="fas fa-graduation-cap text-blue-400 text-xl"></i>
+            <span v-if="!store.collapsed" class="text-white font-bold truncate">教育分析 Agent</span>
         </div>
-    </header>
+        <nav class="flex-1 py-3 overflow-y-auto">
+            <div v-for="p in PAGES" :key="p.key"
+                 class="mx-2 mb-1 px-3 py-2.5 rounded-lg cursor-pointer flex items-center gap-3 transition"
+                 :class="currentPageKey === p.key ? 'bg-blue-600 text-white' : 'hover:bg-slate-700 hover:text-white'"
+                 :title="p.title"
+                 @click="goToPage(p.key)">
+                <i :class="p.icon" class="w-5 text-center"></i>
+                <span v-if="!store.collapsed" class="text-sm">{{ p.title }}</span>
+            </div>
+        </nav>
+        <div class="p-3 border-t border-slate-700 space-y-1">
+            <div class="flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer hover:bg-slate-700" title="切换暗色模式" @click="toggleDarkMode">
+                <i :class="store.darkMode ? 'fas fa-sun' : 'fas fa-moon'" class="w-5 text-center"></i>
+                <span v-if="!store.collapsed" class="text-sm">暗色模式</span>
+            </div>
+            <div class="flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer hover:bg-slate-700" :title="store.collapsed ? '展开导航' : '折叠导航'" @click="store.collapsed = !store.collapsed">
+                <i :class="store.collapsed ? 'fas fa-chevron-right' : 'fas fa-chevron-left'" class="w-5 text-center"></i>
+                <span v-if="!store.collapsed" class="text-sm">折叠导航</span>
+            </div>
+        </div>
+    </aside>
 
-    <div class="bg-white border-b border-gray-200 px-4 flex items-center overflow-x-auto">
-        <div v-for="session in sessions" :key="session.id" class="tab-item" :class="{ 'active': currentSessionId === session.id }" @click="switchSession(session.id)">
-            <span>{{ session.name }}</span>
-            <span class="tab-close" @click.stop="closeSession(session.id)" v-if="sessions.length > 1"><i class="fas fa-times"></i></span>
+    <!-- 主区域 -->
+    <div class="flex-1 flex flex-col min-w-0">
+        <header class="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-5">
+            <h1 class="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                <i :class="currentPage.icon" class="text-blue-500"></i>{{ currentPage.title }}
+            </h1>
+            <div class="text-sm text-gray-500">
+                当前范围：
+                <span v-if="currentSession && currentSession.grade" class="scope-badge">{{ currentSession.grade }}·{{ currentSession.className }}</span>
+                <span v-else class="text-gray-400">未选择</span>
+            </div>
+        </header>
+        <main class="flex-1 min-h-0 overflow-y-auto" :class="store.darkMode ? 'bg-gray-800' : 'bg-gray-100'">
+            <component :is="currentPage.component" />
+        </main>
+    </div>
+
+    <!-- 范围选择弹窗（全局） -->
+    <div v-if="store.scopeModal.visible" class="modal-mask" @click.self="closeScopeModal">
+        <div class="modal-card">
+            <div class="modal-title">{{ store.scopeModal.mode === 'create' ? '新建会话：选择年级班级' : '当前会话缺少范围，请选择年级班级' }}</div>
+            <div class="field">
+                <label>年级</label>
+                <input list="grade-options" v-model="store.scopeModal.grade" placeholder="如：高一 / 三年级">
+            </div>
+            <div class="field">
+                <label>班级</label>
+                <input list="class-options" v-model="store.scopeModal.className" placeholder="如：3班">
+            </div>
+            <div class="modal-actions">
+                <button @click="closeScopeModal" class="btn btn-secondary">取消</button>
+                <button @click="confirmScope" class="btn btn-primary">确定</button>
+            </div>
         </div>
     </div>
 
-    <main class="flex-1 overflow-y-auto p-4 space-y-6" ref="chatContainer" :class="{ 'bg-gray-800': darkMode }">
-        <div v-for="(msg, idx) in currentMessages" :key="idx" class="max-w-3xl mx-auto">
-            <div :class="['flex', msg.role === 'user' ? 'justify-end' : 'justify-start']">
-                <div :class="['flex items-start space-x-3', msg.role === 'user' ? 'flex-row-reverse space-x-reverse' : '']">
-                    <div :class="['w-8 h-8 rounded-full flex items-center justify-center', msg.role === 'user' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600']">
-                        <i :class="msg.role === 'user' ? 'fas fa-user' : 'fas fa-robot'"></i>
-                    </div>
-                    <div :class="['p-3 rounded-lg', msg.role === 'user' ? 'bg-blue-500 text-white max-w-lg' : 'bg-white shadow border border-gray-100']" :style="msg.role === 'assistant' && msg.chartData ? 'width:100%;max-width:600px' : 'max-width:600px'">
-                        <div v-if="msg.role === 'assistant' && msg.isLoading" class="flex space-x-2">
-                            <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse"></div>
-                            <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse delay-100"></div>
-                            <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse delay-200"></div>
+    <!-- Toast 提示 -->
+    <div class="toast-container">
+        <div v-for="t in store.toasts" :key="t.id" class="toast" :class="'toast-' + t.type">{{ t.message }}</div>
+    </div>
+
+    <!-- 预设选项 -->
+    <datalist id="grade-options"><option v-for="g in GRADE_OPTIONS" :value="g"></option></datalist>
+    <datalist id="class-options"><option v-for="c in CLASS_OPTIONS" :value="c"></option></datalist>
+    <datalist id="exam-options"><option v-for="e in EXAM_SUGGESTIONS" :value="e"></option></datalist>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick, reactive } = Vue;
+const API_BASE = '';
+
+// ---------- 预设常量（后续可在设置页做成可编辑） ----------
+const GRADE_OPTIONS = ['一年级','二年级','三年级','四年级','五年级','六年级','初一','初二','初三','高一','高二','高三'];
+const CLASS_OPTIONS = Array.from({length: 20}, (_, i) => (i + 1) + '班');
+const EXAM_SUGGESTIONS = ['期中考试','期末考试','月考1','月考2','月考3','单元测试'];
+
+// ---------- 共享状态 ----------
+const store = reactive({
+    sessions: [],
+    currentSessionId: null,
+    buckets: [],
+    darkMode: localStorage.getItem('darkMode') === 'true',
+    collapsed: false,
+    isLoading: false,
+    userInput: '',
+    toasts: [],
+    uploadForm: { grade: '', className: '', examName: '' },
+    uploadFileName: '',
+    uploading: false,
+    scopeModal: { visible: false, mode: 'create', targetId: null, pendingAction: '', grade: '', className: '' },
+});
+
+const currentSession = computed(() => store.sessions.find(x => x.id === store.currentSessionId) || null);
+const currentMessages = computed(() => {
+    const s = currentSession.value;
+    return s ? s.messages : [];
+});
+
+let controller = null;
+let uploadFile = null;
+let toastSeq = 0;
+
+// ---------- 通用工具 ----------
+function generateId() {
+    return Date.now().toString() + Math.random().toString(36).substr(2, 6);
+}
+
+function toast(message, type = 'success') {
+    const id = ++toastSeq;
+    store.toasts.push({ id, message, type });
+    setTimeout(() => {
+        const idx = store.toasts.findIndex(t => t.id === id);
+        if (idx !== -1) store.toasts.splice(idx, 1);
+    }, 3000);
+}
+
+function persistSessionState() {
+    try {
+        const data = store.sessions.map(s => ({
+            id: s.id,
+            name: s.name,
+            grade: s.grade || '',
+            className: s.className || '',
+            messages: s.messages.map(m => ({
+                role: m.role,
+                content: m.content,
+                isLoading: false,
+                chartData: m.chartData || null
+            }))
+        }));
+        localStorage.setItem('chat_sessions', JSON.stringify(data));
+        localStorage.setItem('current_session_id', store.currentSessionId || '');
+    } catch(e) {}
+}
+
+function restoreSessionState() {
+    try {
+        const data = localStorage.getItem('chat_sessions');
+        const sid = localStorage.getItem('current_session_id');
+        if (data) {
+            store.sessions = JSON.parse(data);
+            store.currentSessionId = sid || store.sessions[0]?.id || null;
+            return store.sessions.length > 0;
+        }
+    } catch(e) {}
+    return false;
+}
+
+function toggleDarkMode() {
+    store.darkMode = !store.darkMode;
+    localStorage.setItem('darkMode', store.darkMode.toString());
+}
+
+function adjustTextareaHeight(el) {
+    nextTick(() => {
+        if (el) {
+            el.style.height = 'auto';
+            el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+        }
+    });
+}
+
+// ---------- Hash 路由 ----------
+function normalizeHash() {
+    const h = window.location.hash.replace(/^#\/?/, '').split('?')[0];
+    return PAGES.some(p => p.key === h) ? h : 'chat';
+}
+
+function goToPage(key) {
+    if (PAGES.some(p => p.key === key)) {
+        window.location.hash = '#/' + key;
+    }
+}
+
+// ---------- 图表渲染 ----------
+function chartList(msg) {
+    if (!msg || !msg.chartData) return [];
+    return Array.isArray(msg.chartData) ? msg.chartData : [msg.chartData];
+}
+
+function renderCharts() {
+    nextTick(() => {
+        const msgs = currentMessages.value;
+        msgs.forEach((msg, idx) => {
+            const charts = chartList(msg);
+            charts.forEach((cd, ci) => {
+                const dom = document.getElementById('chart-' + idx + '-' + ci);
+                if (!dom) return;
+                const chartKey = JSON.stringify(cd);
+                if (dom._echart_key === chartKey) return;
+                try {
+                    if (dom._echart_instance) dom._echart_instance.dispose();
+                    const chart = echarts.init(dom);
+                    chart.setOption(buildEChartOption(cd));
+                    dom._echart_key = chartKey;
+                    dom._echart_instance = chart;
+                    window.addEventListener('resize', () => chart.resize());
+                } catch(e) {
+                    console.error('Chart render error:', e);
+                }
+            });
+        });
+    });
+}
+
+function renderMarkdown(text) {
+    if (!text) return '';
+    const processed = text
+        .replace(/\[正在分析：([^\]]*)\]/g, '<span class="tool-step">⏳ 正在分析：$1</span>')
+        .replace(/\[分析结果已获取\]/g, '<span class="tool-step tool-step-done">✓ 分析结果已获取</span>');
+    try {
+        const html = typeof marked !== 'undefined' ? marked.parse(processed) : processed;
+        return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
+    } catch(e) {
+        return processed;
+    }
+}
+
+function buildEChartOption(cd) {
+    const baseOption = cd.option || {};
+    const opt = {
+        title: { text: cd.title || '', left: 'center', textStyle: { fontSize: 14 } },
+        tooltip: baseOption.tooltip || { trigger: 'axis' },
+        legend: baseOption.legend || { bottom: 0 },
+        grid: { left: '3%', right: '4%', bottom: baseOption.legend ? '15%' : '3%', containLabel: true },
+    };
+    if (cd.type === 'radar') {
+        opt.radar = {
+            indicator: cd.indicator || [],
+            shape: (baseOption.radar && baseOption.radar.shape) || 'polygon',
+        };
+        opt.series = [{
+            type: 'radar',
+            data: cd.series.map(s => ({ name: s.name, value: s.data }))
+        }];
+    } else {
+        opt.xAxis = {
+            type: 'category',
+            data: cd.xAxis || [],
+            axisLabel: { rotate: baseOption.xAxis_rotate || 0 }
+        };
+        opt.yAxis = { type: 'value', name: (baseOption.yAxis && baseOption.yAxis.name) || '' };
+        opt.series = (cd.series || []).map(s => ({
+            name: s.name,
+            type: 'bar',
+            data: s.data,
+            itemStyle: { borderRadius: [4, 4, 0, 0] }
+        }));
+        if (baseOption.color) {
+            opt.color = baseOption.color;
+        }
+    }
+    return opt;
+}
+
+function findMatchingBrace(text, openIdx) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = openIdx; i < text.length; i++) {
+        const ch = text[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+        } else if (ch === '{') {
+            depth++;
+        } else if (ch === '}') {
+            depth--;
+            if (depth === 0) return i;
+        }
+    }
+    return -1;
+}
+
+function parseChartMarkers(rawText) {
+    // 提取文本中任意位置的 ::chart::{...}，支持多个图表与 JSON 内层花括号
+    const charts = [];
+    const seen = new Set();
+    let cleaned = rawText;
+    let searchFrom = 0;
+    const marker = '::chart::';
+    while (true) {
+        const start = cleaned.indexOf(marker, searchFrom);
+        if (start === -1) break;
+        const jsonStart = cleaned.indexOf('{', start + marker.length);
+        if (jsonStart === -1) {
+            searchFrom = start + marker.length;
+            continue;
+        }
+        const end = findMatchingBrace(cleaned, jsonStart);
+        if (end === -1) {
+            searchFrom = jsonStart + 1;
+            continue;
+        }
+        try {
+            const jsonStr = cleaned.substring(jsonStart, end + 1);
+            const chart = JSON.parse(jsonStr);
+            if (chart && chart.type) {
+                const key = JSON.stringify(chart);
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    charts.push(chart);
+                }
+            }
+        } catch(e) {}
+        let removeEnd = end + 1;
+        while (removeEnd < cleaned.length && /\s/.test(cleaned[removeEnd])) {
+            removeEnd++;
+        }
+        cleaned = cleaned.slice(0, start) + cleaned.slice(removeEnd);
+        searchFrom = start;
+    }
+    return { charts, content: cleaned.trim() };
+}
+
+// ---------- 会话与对话 ----------
+function switchSession(id) {
+    store.currentSessionId = id;
+    persistSessionState();
+}
+
+function deleteSession(id) {
+    const idx = store.sessions.findIndex(s => s.id === id);
+    if (idx === -1) return;
+    if (controller && store.currentSessionId === id) {
+        controller.abort();
+    }
+    store.sessions.splice(idx, 1);
+    if (store.currentSessionId === id) {
+        store.currentSessionId = store.sessions[0]?.id || null;
+    }
+    persistSessionState();
+    // 同步删除后端 Redis 中的会话聊天记忆（桶数据为多个会话共享，不受影响）
+    fetch(`${API_BASE}/ai/session?memoryId=${encodeURIComponent(id)}`, {method: 'DELETE'})
+        .then(res => {
+            if (res.ok) {
+                toast('会话已删除');
+            } else {
+                toast('会话已从本地删除，后端清理失败', 'error');
+            }
+        })
+        .catch(() => toast('会话已从本地删除，后端清理失败', 'error'));
+}
+
+function openScopeModal(mode = 'create', targetId = null, pendingAction = '') {
+    store.scopeModal = { visible: true, mode, targetId, pendingAction, grade: '', className: '' };
+}
+
+function closeScopeModal() {
+    store.scopeModal.visible = false;
+    store.scopeModal.pendingAction = '';
+}
+
+function confirmScope() {
+    const grade = store.scopeModal.grade.trim();
+    const className = store.scopeModal.className.trim();
+    if (!grade || !className) {
+        toast('请填写年级和班级', 'error');
+        return;
+    }
+    if (store.scopeModal.mode === 'assign' && store.scopeModal.targetId) {
+        const s = store.sessions.find(x => x.id === store.scopeModal.targetId);
+        if (s) {
+            s.grade = grade;
+            s.className = className;
+        }
+    } else {
+        const id = generateId();
+        store.sessions.push({ id, name: '新会话', grade, className, messages: [] });
+        store.currentSessionId = id;
+    }
+    persistSessionState();
+    const action = store.scopeModal.pendingAction;
+    closeScopeModal();
+    if (action === 'send') {
+        sendMessage();
+    }
+}
+
+async function sendMessage() {
+    if (!store.userInput.trim() || store.isLoading) return;
+    const s = currentSession.value;
+    if (!s) {
+        toast('请先新建会话', 'error');
+        return;
+    }
+    if (!s.grade || !s.className) {
+        openScopeModal('assign', s.id, 'send');
+        return;
+    }
+    if (controller) controller.abort();
+    controller = new AbortController();
+
+    const msg = store.userInput.trim();
+    const userMsgCount = s.messages.filter(m => m.role === 'user').length;
+    if (userMsgCount === 0) {
+        s.name = msg.length > 20 ? msg.slice(0, 20) + '...' : msg;
+    }
+    s.messages.push({role: 'user', content: msg, isLoading: false});
+    s.messages.push({role: 'assistant', content: '', isLoading: true});
+
+    store.userInput = '';
+    store.isLoading = true;
+    persistSessionState();
+
+    try {
+        const url = `${API_BASE}/ai/chat?message=${encodeURIComponent(msg)}&memoryId=${encodeURIComponent(s.id)}&grade=${encodeURIComponent(s.grade)}&className=${encodeURIComponent(s.className)}`;
+        const res = await fetch(url, {signal: controller.signal});
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.message || 'HTTP error');
+        const last = s.messages[s.messages.length - 1];
+        const rawText = (result.status === 1 && result.data) ? result.data : result.message || '请求失败';
+        const parsed = parseChartMarkers(rawText);
+        last.content = parsed.content || (parsed.charts.length ? '图表已生成' : rawText);
+        if (parsed.charts.length) {
+            last.chartData = parsed.charts;
+        } else {
+            last.chartData = null;
+        }
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+            const last = s.messages[s.messages.length - 1];
+            last.content = '错误: ' + error.message;
+        }
+    } finally {
+        const last = s.messages[s.messages.length - 1];
+        last.isLoading = false;
+        store.isLoading = false;
+        controller = null;
+        persistSessionState();
+    }
+}
+
+function stopResponse() {
+    if (controller) {
+        controller.abort();
+        const s = currentSession.value;
+        if (s && s.messages.length > 0) {
+            s.messages[s.messages.length - 1].isLoading = false;
+        }
+        store.isLoading = false;
+        controller = null;
+        persistSessionState();
+    }
+}
+
+// ---------- 数据管理 ----------
+async function loadBuckets() {
+    try {
+        const res = await fetch(`${API_BASE}/ai/buckets`);
+        if (!res.ok) return;
+        const data = await res.json();
+        store.buckets = data.buckets || [];
+    } catch(e) {}
+}
+
+function onFilePicked(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const name = f.name.toLowerCase();
+    if (!name.endsWith('.pdf') && !name.endsWith('.xlsx') && !name.endsWith('.xls')) {
+        toast('请选择 PDF 或 Excel 格式文件', 'error');
+        e.target.value = '';
+        return;
+    }
+    uploadFile = f;
+    store.uploadFileName = f.name;
+}
+
+async function doUpload() {
+    const grade = store.uploadForm.grade.trim();
+    const className = store.uploadForm.className.trim();
+    const examName = store.uploadForm.examName.trim();
+    if (!grade || !className) {
+        toast('请填写年级和班级', 'error');
+        return;
+    }
+    if (!examName) {
+        toast('请填写考试名称（如：期中考试）', 'error');
+        return;
+    }
+    if (examName.length > 30) {
+        toast('考试名称不能超过 30 个字符', 'error');
+        return;
+    }
+    const bucket = store.buckets.find(b => b.grade === grade && b.className === className);
+    const existing = bucket && bucket.documents.find(d => d.examName === examName);
+    if (existing) {
+        const ok = confirm(`「${grade}${className}」已存在考试「${examName}」（${existing.uploadedAt} 上传），再次上传将覆盖原数据，是否继续？`);
+        if (!ok) return;
+    }
+    if (!uploadFile) {
+        toast('请选择成绩单文件', 'error');
+        return;
+    }
+    const formData = new FormData();
+    formData.append('file', uploadFile);
+    formData.append('memoryId', generateId());
+    formData.append('grade', grade);
+    formData.append('className', className);
+    formData.append('examName', examName);
+    store.uploading = true;
+    try {
+        const res = await fetch(`${API_BASE}/ai/upload`, {method: 'POST', body: formData});
+        const data = await res.json();
+        if (res.ok && data.success) {
+            toast(`上传成功：${grade}${className} · ${examName}（${data.studentCount || 0} 名学生）`);
+            store.uploadForm = { grade: '', className: '', examName: '' };
+            uploadFile = null;
+            store.uploadFileName = '';
+            loadBuckets();
+        } else {
+            toast(data.message || '上传失败', 'error');
+        }
+    } catch (err) {
+        toast('上传失败: ' + err.message, 'error');
+    } finally {
+        store.uploading = false;
+    }
+}
+
+async function deleteDoc(b, d) {
+    if (!confirm(`确定删除 ${b.grade}${b.className} 的「${d.examName}」成绩单？`)) return;
+    try {
+        const url = `${API_BASE}/ai/document?grade=${encodeURIComponent(b.grade)}&className=${encodeURIComponent(b.className)}&examName=${encodeURIComponent(d.examName)}`;
+        const res = await fetch(url, {method: 'DELETE'});
+        const data = await res.json();
+        if (res.ok && data.success) {
+            toast(`已删除 ${b.grade}${b.className} · ${d.examName}`);
+            loadBuckets();
+        } else {
+            toast(data.message || '删除失败', 'error');
+        }
+    } catch (err) {
+        toast('删除失败: ' + err.message, 'error');
+    }
+}
+
+async function deleteBucket(b) {
+    if (!confirm(`确定删除 ${b.grade}${b.className} 的全部成绩单？此操作不可恢复。`)) return;
+    try {
+        const url = `${API_BASE}/ai/bucket?grade=${encodeURIComponent(b.grade)}&className=${encodeURIComponent(b.className)}`;
+        const res = await fetch(url, {method: 'DELETE'});
+        const data = await res.json();
+        if (res.ok && data.success) {
+            toast(`已删除 ${b.grade}${b.className} 的全部数据`);
+            loadBuckets();
+        } else {
+            toast(data.message || '删除失败', 'error');
+        }
+    } catch (err) {
+        toast('删除失败: ' + err.message, 'error');
+    }
+}
+
+function createSessionFromBucket(b) {
+    const id = generateId();
+    store.sessions.push({ id, name: '新会话', grade: b.grade, className: b.className, messages: [] });
+    store.currentSessionId = id;
+    persistSessionState();
+    goToPage('chat');
+    toast(`已创建 ${b.grade}${b.className} 会话`);
+}
+
+// ---------- 页面组件 ----------
+const ChatPage = {
+    name: 'ChatPage',
+    template: `
+        <div class="flex h-full">
+            <div class="w-64 border-r flex flex-col" :class="store.darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-white'">
+                <div class="p-3 border-b" :class="store.darkMode ? 'border-gray-700' : 'border-gray-100'">
+                    <button @click="openScopeModal('create')" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 text-sm flex items-center justify-center gap-2">
+                        <i class="fas fa-plus"></i>新建会话
+                    </button>
+                </div>
+                <div class="flex-1 overflow-y-auto px-2 py-2">
+                    <div v-if="store.sessions.length === 0" class="text-center text-gray-400 text-sm py-10">暂无会话，点击上方新建</div>
+                    <div v-for="s in store.sessions" :key="s.id"
+                         class="group rounded-lg px-3 py-2 mb-1 cursor-pointer"
+                         :class="s.id === store.currentSessionId ? (store.darkMode ? 'bg-blue-900 border border-blue-700' : 'bg-blue-50 border border-blue-200') : (store.darkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-100')"
+                         @click="switchSession(s.id)">
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm truncate" :class="store.darkMode ? 'text-gray-200' : 'text-gray-700'">{{ s.name }}</span>
+                            <i class="fas fa-times text-xs text-gray-400 hover:text-red-500 ml-2" @click.stop="deleteSession(s.id)"></i>
                         </div>
-                        <div v-else-if="msg.role === 'assistant' && msg.chartData" class="whitespace-pre-wrap">{{ msg.content }}</div>
-                        <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
-                        <div v-if="msg.role === 'assistant' && msg.chartData" :id="'chart-' + idx" class="chart-container"></div>
+                        <div class="mt-1">
+                            <span v-if="s.grade" class="scope-badge">{{ s.grade }}·{{ s.className }}</span>
+                            <span v-else class="text-xs text-red-400">未设置范围</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex-1 flex flex-col min-w-0">
+                <div class="px-5 py-3 border-b flex items-center justify-between" :class="store.darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-white'">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span class="font-medium text-sm truncate" :class="store.darkMode ? 'text-gray-200' : 'text-gray-700'">{{ currentSession ? currentSession.name : '请先新建会话' }}</span>
+                        <span v-if="currentSession && currentSession.grade" class="scope-badge">{{ currentSession.grade }}·{{ currentSession.className }}</span>
+                        <span v-if="currentSession && !currentSession.grade" class="text-xs text-red-500 cursor-pointer hover:underline" @click="openScopeModal('assign', currentSession.id)">未设置范围，点击设置</span>
+                    </div>
+                    <button v-if="currentSession && currentSession.grade" @click="openScopeModal('assign', currentSession.id)" class="text-xs text-blue-500 hover:underline">切换范围</button>
+                </div>
+
+                <div ref="chatContainer" class="flex-1 overflow-y-auto p-5 space-y-5" :class="store.darkMode ? 'bg-gray-800' : 'bg-gray-100'">
+                    <div v-if="currentMessages.length === 0" class="text-center text-gray-400 py-16">
+                        <i class="fas fa-comments text-4xl mb-3 opacity-40"></i>
+                        <div class="text-sm">选择一个会话开始提问，或点击左侧「新建会话」</div>
+                    </div>
+                    <div v-for="(msg, idx) in currentMessages" :key="idx" class="max-w-3xl mx-auto">
+                        <div :class="['flex', msg.role === 'user' ? 'justify-end' : 'justify-start']">
+                            <div :class="['flex items-start space-x-3', msg.role === 'user' ? 'flex-row-reverse space-x-reverse' : '']">
+                                <div :class="['w-8 h-8 rounded-full flex items-center justify-center shrink-0', msg.role === 'user' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600']">
+                                    <i :class="msg.role === 'user' ? 'fas fa-user' : 'fas fa-robot'"></i>
+                                </div>
+                                <div :class="['p-3 rounded-lg', msg.role === 'user' ? 'bg-blue-500 text-white max-w-lg' : (store.darkMode ? 'bg-gray-700 text-gray-100 shadow border border-gray-600 dark-bubble' : 'bg-white shadow border border-gray-100')]" :style="msg.role === 'assistant' && chartList(msg).length ? 'width:100%;max-width:640px' : 'max-width:600px'">
+                                    <div v-if="msg.role === 'assistant' && msg.isLoading" class="flex space-x-2">
+                                        <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse"></div>
+                                        <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse delay-100"></div>
+                                        <div class="w-2 h-2 rounded-full bg-gray-300 animate-pulse delay-200"></div>
+                                    </div>
+                                    <div v-else-if="msg.role === 'assistant'" class="markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                                    <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
+                                    <div v-for="(cd, ci) in chartList(msg)" :key="ci" :id="'chart-' + idx + '-' + ci" class="chart-container"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="px-5 py-4 border-t" :class="store.darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-white'">
+                    <div class="flex items-center max-w-3xl mx-auto">
+                        <textarea v-model="store.userInput" @keydown.enter.exact.prevent="sendMessage" @input="adjustTextareaHeight($event.target)" placeholder="输入你的问题..." rows="1" ref="textarea" class="flex-1 border border-gray-300 rounded-lg p-3 focus:outline-none focus:border-blue-500 resize-none" :class="store.darkMode ? 'bg-gray-800 text-gray-100 border-gray-600' : 'bg-white'" :disabled="store.isLoading"></textarea>
+                        <button v-if="!store.isLoading" @click="sendMessage" class="ml-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-3">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                        <button v-if="store.isLoading" @click="stopResponse" class="ml-3 bg-red-500 hover:bg-red-600 text-white rounded-lg px-4 py-3">
+                            <i class="fas fa-stop"></i>
+                        </button>
                     </div>
                 </div>
             </div>
         </div>
-    </main>
-
-    <footer :class="['border-t p-4', darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200']">
-        <div class="max-w-3xl mx-auto">
-            <div class="flex items-center">
-                <textarea v-model="userInput" @keydown.enter.exact.prevent="sendMessage" @input="adjustTextareaHeight" placeholder="输入你的问题..." rows="1" ref="textarea" class="flex-1 border border-gray-300 rounded-lg p-3 focus:outline-none focus:border-blue-500 resize-none" :disabled="isLoading"></textarea>
-                <button v-if="!isLoading" @click="sendMessage" class="ml-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-3">
-                    <i class="fas fa-paper-plane"></i>
-                </button>
-                <button v-if="isLoading" @click="stopResponse" class="ml-3 bg-red-500 hover:bg-red-600 text-white rounded-lg px-4 py-3">
-                    <i class="fas fa-stop"></i>
-                </button>
-            </div>
-        </div>
-    </footer>
-</div>
-
-<script>
-const { createApp, ref, computed, watch, onMounted, nextTick } = Vue;
-const API_BASE = '';
-
-createApp({
+    `,
     setup() {
-        const sessions = ref([]);
-        const currentSessionId = ref(null);
-        const userInput = ref('');
-        const isLoading = ref(false);
-        const darkMode = ref(false);
         const chatContainer = ref(null);
-        const textarea = ref(null);
-        let controller = null;
-
-        const currentMessages = computed(() => {
-            const s = sessions.value.find(x => x.id === currentSessionId.value);
-            return s ? s.messages : [];
-        });
-
-        const generateId = () => Date.now().toString() + Math.random().toString(36).substr(2, 6);
-
-        const persistSessionState = () => {
-            try {
-                const data = sessions.value.map(s => ({
-                    id: s.id,
-                    name: s.name,
-                    messages: s.messages.map(m => ({
-                        role: m.role,
-                        content: m.content,
-                        isLoading: false,
-                        chartData: m.chartData || null
-                    }))
-                }));
-                localStorage.setItem('chat_sessions', JSON.stringify(data));
-                localStorage.setItem('current_session_id', currentSessionId.value || '');
-            } catch(e) {}
-        };
-
-        const restoreSessionState = () => {
-            try {
-                const data = localStorage.getItem('chat_sessions');
-                const sid = localStorage.getItem('current_session_id');
-                if (data) {
-                    sessions.value = JSON.parse(data);
-                    currentSessionId.value = sid || sessions.value[0]?.id || null;
-                    return sessions.value.length > 0;
-                }
-            } catch(e) {}
-            return false;
-        };
-
-        const scrollToBottom = () => {
+        const scroll = () => {
             nextTick(() => {
                 if (chatContainer.value) {
                     chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
@@ -148,226 +739,153 @@ createApp({
                 renderCharts();
             });
         };
-
-        const renderCharts = () => {
-            nextTick(() => {
-                const msgs = currentMessages.value;
-                msgs.forEach((msg, idx) => {
-                    if (msg.chartData && msg.role === 'assistant') {
-                        const dom = document.getElementById('chart-' + idx);
-                        if (dom && !dom._echart_rendered) {
-                            try {
-                                const chart = echarts.init(dom);
-                                const cd = msg.chartData;
-                                const option = buildEChartOption(cd);
-                                chart.setOption(option);
-                                dom._echart_rendered = true;
-                                window.addEventListener('resize', () => chart.resize());
-                            } catch(e) {
-                                console.error('Chart render error:', e);
-                            }
-                        }
-                    }
-                });
-            });
+        watch(currentMessages, scroll, {deep: true});
+        onMounted(scroll);
+        return {
+            store, currentSession, currentMessages,
+            sendMessage, stopResponse, switchSession, deleteSession,
+            openScopeModal, adjustTextareaHeight,
+            chartList, renderMarkdown
         };
+    }
+};
 
-        const buildEChartOption = (cd) => {
-            const baseOption = cd.option || {};
-            const opt = {
-                title: { text: cd.title || '', left: 'center', textStyle: { fontSize: 14 } },
-                tooltip: baseOption.tooltip || { trigger: 'axis' },
-                legend: baseOption.legend || { bottom: 0 },
-                grid: { left: '3%', right: '4%', bottom: baseOption.legend ? '15%' : '3%', containLabel: true },
-            };
+const DataPage = {
+    name: 'DataPage',
+    template: `
+        <div class="p-6 space-y-6">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <h2 class="text-base font-semibold text-gray-800 mb-4"><i class="fas fa-file-upload text-blue-500 mr-2"></i>上传成绩单</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="field">
+                        <label>年级</label>
+                        <input list="grade-options" v-model="store.uploadForm.grade" placeholder="如：高一 / 三年级">
+                    </div>
+                    <div class="field">
+                        <label>班级</label>
+                        <input list="class-options" v-model="store.uploadForm.className" placeholder="如：3班">
+                    </div>
+                    <div class="field">
+                        <label>考试名称</label>
+                        <input list="exam-options" v-model="store.uploadForm.examName" placeholder="如：期中考试 / 月考1">
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                    <div class="field md:col-span-2">
+                        <label>成绩单文件（PDF / Excel）</label>
+                        <input type="file" accept=".pdf,.xlsx,.xls" @change="onFilePicked" class="block w-full text-sm text-gray-500">
+                        <div v-if="store.uploadFileName" class="text-xs text-gray-500 mt-1">{{ store.uploadFileName }}</div>
+                    </div>
+                    <button @click="doUpload" :disabled="store.uploading" class="btn btn-primary w-full">{{ store.uploading ? '上传中...' : '开始上传' }}</button>
+                </div>
+            </div>
 
-            if (cd.type === 'radar') {
-                opt.radar = {
-                    indicator: cd.indicator || [],
-                    shape: (baseOption.radar && baseOption.radar.shape) || 'polygon',
-                };
-                opt.series = [{
-                    type: 'radar',
-                    data: cd.series.map(s => ({ name: s.name, value: s.data }))
-                }];
-            } else {
-                // bar or default
-                opt.xAxis = {
-                    type: 'category',
-                    data: cd.xAxis || [],
-                    axisLabel: { rotate: baseOption.xAxis_rotate || 0 }
-                };
-                opt.yAxis = { type: 'value', name: (baseOption.yAxis && baseOption.yAxis.name) || '' };
-                opt.series = (cd.series || []).map(s => ({
-                    name: s.name,
-                    type: 'bar',
-                    data: s.data,
-                    itemStyle: { borderRadius: [4, 4, 0, 0] }
-                }));
-                if (baseOption.color) {
-                    opt.color = baseOption.color;
-                }
-            }
-            return opt;
-        };
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-base font-semibold text-gray-800"><i class="fas fa-database text-blue-500 mr-2"></i>已有数据（按年级 + 班级隔离）</h2>
+                    <button @click="loadBuckets" class="text-xs text-blue-500 hover:underline"><i class="fas fa-sync-alt mr-1"></i>刷新</button>
+                </div>
+                <div v-if="store.buckets.length === 0" class="text-center text-gray-400 py-10 text-sm">暂无已上传的成绩单，请先上传。</div>
+                <div v-else class="space-y-4">
+                    <div v-for="b in store.buckets" :key="b.bucketId" class="border rounded-lg p-4">
+                        <div class="flex items-center justify-between flex-wrap gap-2">
+                            <div class="font-medium text-gray-800"><i class="fas fa-school mr-1 text-blue-500"></i>{{ b.grade }} · {{ b.className }}</div>
+                            <div class="space-x-2">
+                                <button @click="createSessionFromBucket(b)" class="btn btn-secondary text-xs">用此范围新建会话</button>
+                                <button @click="deleteBucket(b)" class="btn btn-danger text-xs">删除桶</button>
+                            </div>
+                        </div>
+                        <table v-if="b.documents.length" class="mt-3 w-full text-sm">
+                            <thead>
+                                <tr class="text-left text-gray-400 border-b border-gray-200">
+                                    <th class="py-2 pr-2">考试名称</th>
+                                    <th class="pr-2">文件名</th>
+                                    <th class="pr-2">上传时间</th>
+                                    <th class="pr-2">人数</th>
+                                    <th class="pr-2">科目数</th>
+                                    <th class="text-right">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="d in b.documents" :key="d.examName" class="border-b border-gray-100">
+                                    <td class="py-2 pr-2 font-medium">{{ d.examName }}</td>
+                                    <td class="pr-2 text-gray-500">{{ d.filename }}</td>
+                                    <td class="pr-2 text-gray-500">{{ d.uploadedAt }}</td>
+                                    <td class="pr-2">{{ d.studentCount }}</td>
+                                    <td class="pr-2">{{ d.subjectCount }}</td>
+                                    <td class="text-right"><button @click="deleteDoc(b, d)" class="text-red-500 hover:underline">删除</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div v-else class="text-xs text-gray-400 mt-2">该桶暂无考试文档</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `,
+    setup() {
+        return { store, loadBuckets, onFilePicked, doUpload, deleteDoc, deleteBucket, createSessionFromBucket };
+    }
+};
 
-        const createNewSession = () => {
-            const id = generateId();
-            sessions.value.push({ id, name: '新会话', messages: [] });
-            currentSessionId.value = id;
-            persistSessionState();
-        };
+const SettingsPage = {
+    name: 'SettingsPage',
+    template: `
+        <div class="p-6 space-y-6 max-w-3xl">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <h2 class="text-base font-semibold text-gray-800 mb-3"><i class="fas fa-info-circle text-blue-500 mr-2"></i>关于</h2>
+                <p class="text-sm text-gray-600">教育分析 Agent 管理系统 · 版本 v0.2.0</p>
+                <p class="text-sm text-gray-500 mt-1">基于 FastAPI + LangGraph + Redis，成绩数据按「年级 + 班级」桶隔离，支持多考试对比分析。</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <h2 class="text-base font-semibold text-gray-800 mb-3"><i class="fas fa-sliders-h text-blue-500 mr-2"></i>预设说明</h2>
+                <ul class="text-sm text-gray-600 space-y-2 list-disc list-inside">
+                    <li>年级 / 班级 / 考试名称预设定义在页面脚本顶部常量中（GRADE_OPTIONS / CLASS_OPTIONS / EXAM_SUGGESTIONS），可直接修改。</li>
+                    <li>接口地址 API_BASE 默认同源（''），可按部署环境修改。</li>
+                </ul>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <h2 class="text-base font-semibold text-gray-800 mb-3"><i class="fas fa-rocket text-blue-500 mr-2"></i>后续扩展</h2>
+                <p class="text-sm text-gray-600">新增功能页：在 PAGES 注册表中添加 { key, title, icon, component } 一条记录即可。</p>
+            </div>
+        </div>
+    `,
+    setup() {
+        return {};
+    }
+};
 
-        const switchSession = (id) => {
-            currentSessionId.value = id;
-            persistSessionState();
-            scrollToBottom();
-        };
+// ---------- 页面注册表（后续新增功能页在此添加） ----------
+const PAGES = [
+    { key: 'chat', title: '成绩对话', icon: 'fas fa-comments', component: ChatPage },
+    { key: 'data', title: '数据管理', icon: 'fas fa-database', component: DataPage },
+    { key: 'settings', title: '系统设置', icon: 'fas fa-cog', component: SettingsPage },
+];
 
-        const closeSession = (id) => {
-            const idx = sessions.value.findIndex(s => s.id === id);
-            if (idx !== -1) sessions.value.splice(idx, 1);
-            if (currentSessionId.value === id) {
-                currentSessionId.value = sessions.value[0]?.id || null;
-                if (!currentSessionId.value) createNewSession();
-            }
-            persistSessionState();
-        };
-
-        const uploadPdf = async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            const name = file.name.toLowerCase();
-            if (!name.endsWith('.pdf') && !name.endsWith('.xlsx') && !name.endsWith('.xls')) {
-                alert('请选择 PDF 或 Excel 格式文件');
-                e.target.value = '';
-                return;
-            }
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('memoryId', currentSessionId.value);
-            try {
-                const res = await fetch(`${API_BASE}/ai/upload`, {method: 'POST', body: formData});
-                const data = await res.json();
-                if (res.ok && data.success) {
-                    const s = sessions.value.find(x => x.id === currentSessionId.value);
-                    if (s) {
-                        s.messages.push({role: 'assistant', content: '成绩单已上传成功（' + (data.textLength || 0) + ' 字），可直接提问分析。', isLoading: false});
-                        s.name = '会话 - ' + file.name;
-                        persistSessionState();
-                    }
-                } else {
-                    alert(data.message || '上传失败');
-                }
-            } catch (err) {
-                alert('上传失败: ' + err.message);
-            }
-            e.target.value = '';
-            scrollToBottom();
-        };
-
-        const sendMessage = async () => {
-            if (!userInput.value.trim() || isLoading.value) return;
-            if (controller) controller.abort();
-            controller = new AbortController();
-
-            const s = sessions.value.find(x => x.id === currentSessionId.value);
-            if (!s) return;
-
-            const msg = userInput.value.trim();
-            const userMsgCount = s.messages.filter(m => m.role === 'user').length;
-            if (userMsgCount === 0) {
-                s.name = msg.length > 20 ? msg.slice(0, 20) + '...' : msg;
-            }
-            s.messages.push({role: 'user', content: msg, isLoading: false});
-            s.messages.push({role: 'assistant', content: '', isLoading: true});
-
-            userInput.value = '';
-            adjustTextareaHeight();
-            scrollToBottom();
-            isLoading.value = true;
-            persistSessionState();
-
-            try {
-                const res = await fetch(`${API_BASE}/ai/chat?message=${encodeURIComponent(msg)}&memoryId=${currentSessionId.value}`, {signal: controller.signal});
-                const result = await res.json();
-                if (!res.ok) throw new Error(result.message || 'HTTP error');
-                const last = s.messages[s.messages.length - 1];
-                const rawText = (result.status === 1 && result.data) ? result.data : result.message || '请求失败';
-                // 检测图表标记 ::chart::{...}
-                const chartMarker = '::chart::';
-                const chartIdx = rawText.indexOf(chartMarker);
-                if (chartIdx !== -1) {
-                    const beforeChart = rawText.substring(0, chartIdx).trim();
-                    const chartJson = rawText.substring(chartIdx + chartMarker.length).trim();
-                    try {
-                        last.chartData = JSON.parse(chartJson);
-                        last.content = beforeChart || '图表已生成';
-                    } catch(e) {
-                        last.content = rawText;
-                    }
-                } else {
-                    last.content = rawText;
-                }
-                scrollToBottom();
-            } catch (error) {
-                if (error.name !== 'AbortError') {
-                    const last = s.messages[s.messages.length - 1];
-                    last.content = '错误: ' + error.message;
-                }
-            } finally {
-                const last = s.messages[s.messages.length - 1];
-                last.isLoading = false;
-                isLoading.value = false;
-                controller = null;
-                persistSessionState();
-                scrollToBottom();
-            }
-        };
-
-        const stopResponse = () => {
-            if (controller) {
-                controller.abort();
-                const s = sessions.value.find(x => x.id === currentSessionId.value);
-                if (s && s.messages.length > 0) {
-                    s.messages[s.messages.length - 1].isLoading = false;
-                }
-                isLoading.value = false;
-                controller = null;
-                persistSessionState();
-            }
-        };
-
-        const adjustTextareaHeight = () => {
-            nextTick(() => {
-                if (textarea.value) {
-                    textarea.value.style.height = 'auto';
-                    textarea.value.style.height = Math.min(textarea.value.scrollHeight, 200) + 'px';
-                }
-            });
-        };
-
-        const toggleDarkMode = () => {
-            darkMode.value = !darkMode.value;
-            localStorage.setItem('darkMode', darkMode.value.toString());
+// ---------- 根应用 ----------
+createApp({
+    setup() {
+        const currentPageKey = ref(normalizeHash());
+        const currentPage = computed(() => PAGES.find(p => p.key === currentPageKey.value) || PAGES[0]);
+        const onHashChange = () => {
+            currentPageKey.value = normalizeHash();
         };
 
         onMounted(() => {
-            darkMode.value = localStorage.getItem('darkMode') === 'true';
-            const restored = restoreSessionState();
-            if (!restored) {
-                createNewSession();
-            }
-            scrollToBottom();
+            window.addEventListener('hashchange', onHashChange);
+            restoreSessionState();
+            loadBuckets();
         });
 
-        watch(currentMessages, scrollToBottom, {deep: true});
+        onUnmounted(() => {
+            window.removeEventListener('hashchange', onHashChange);
+        });
 
         return {
-            sessions, currentSessionId, currentMessages, userInput, isLoading, darkMode,
-            chatContainer, textarea,
-            sendMessage, stopResponse, toggleDarkMode, adjustTextareaHeight,
-            createNewSession, switchSession, closeSession, uploadPdf
+            store, PAGES, currentPage, currentPageKey, currentSession,
+            GRADE_OPTIONS, CLASS_OPTIONS, EXAM_SUGGESTIONS,
+            goToPage, toggleDarkMode,
+            openScopeModal, closeScopeModal, confirmScope
         };
     }
 }).mount('#app');
