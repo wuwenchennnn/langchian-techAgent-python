@@ -22,7 +22,7 @@ class RedisChatMemoryStore:
             "content": content,
             "timestamp": json.dumps({"$date": "2024-01-01T00:00:00Z"})
         }
-        self.redis_client.lpush(key, json.dumps(message))
+        self.redis_client.lpush(key, json.dumps(message, ensure_ascii=False))
         # 设置过期时间为24小时
         self.redis_client.expire(key, 86400)
     
