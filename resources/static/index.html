@@ -37,7 +37,8 @@
         .field { margin-bottom: 0.75rem; }
         .field label { display: block; font-size: 0.8rem; color: #4b5563; margin-bottom: 0.25rem; }
         .field input { width: 100%; border: 1px solid #d1d5db; border-radius: 0.5rem; padding: 0.5rem 0.75rem; font-size: 0.875rem; }
-        .field input:focus { outline: none; border-color: #3b82f6; }
+        .field select { width: 100%; border: 1px solid #d1d5db; border-radius: 0.5rem; padding: 0.5rem 0.75rem; font-size: 0.875rem; background: #fff; }
+        .field input:focus, .field select:focus { outline: none; border-color: #3b82f6; }
         .toast-container { position: fixed; top: 1rem; right: 1rem; z-index: 100; display: flex; flex-direction: column; gap: 0.5rem; }
         .toast { padding: 0.6rem 1rem; border-radius: 0.5rem; font-size: 0.875rem; color: #fff; box-shadow: 0 10px 30px rgba(0,0,0,0.15); animation: toast-in 0.2s ease; }
         .toast-success { background: #16a34a; }
@@ -120,11 +121,17 @@
             <div class="modal-title">{{ store.scopeModal.mode === 'create' ? '新建会话：选择年级班级' : '当前会话缺少范围，请选择年级班级' }}</div>
             <div class="field">
                 <label>年级</label>
-                <input list="grade-options" v-model="store.scopeModal.grade" placeholder="如：高一 / 三年级">
+                <select v-model="store.scopeModal.grade">
+                    <option value="">请选择年级</option>
+                    <option v-for="g in GRADE_OPTIONS" :value="g">{{ g }}</option>
+                </select>
             </div>
             <div class="field">
                 <label>班级</label>
-                <input list="class-options" v-model="store.scopeModal.className" :disabled="store.scopeModal.wholeGrade" placeholder="如：3班">
+                <select v-model="store.scopeModal.className" :disabled="store.scopeModal.wholeGrade">
+                    <option value="">请选择班级</option>
+                    <option v-for="c in CLASS_OPTIONS" :value="c">{{ c }}</option>
+                </select>
                 <label class="mt-1 flex items-center gap-1 text-xs text-gray-500 cursor-pointer select-none">
                     <input type="checkbox" v-model="store.scopeModal.wholeGrade" class="mr-1" @change="onWholeGradeToggle"> 整个年级（跨班对比，不指定班级）
                 </label>
@@ -142,9 +149,6 @@
     </div>
 
     <!-- 预设选项 -->
-    <datalist id="grade-options"><option v-for="g in GRADE_OPTIONS" :value="g"></option></datalist>
-    <datalist id="class-options"><option v-for="c in CLASS_OPTIONS" :value="c"></option></datalist>
-    <datalist id="exam-options"><option v-for="e in EXAM_SUGGESTIONS" :value="e"></option></datalist>
 </div>
 
 <script>
@@ -166,7 +170,8 @@ const store = reactive({
     isLoading: false,
     userInput: '',
     toasts: [],
-    uploadForm: { grade: '', className: '', examName: '' },
+    uploadForm: { year: '', grade: '', className: '', examName: '' },
+    examCustom: false,
     uploadFileName: '',
     uploading: false,
     scopeModal: { visible: false, mode: 'create', targetId: null, pendingAction: '', grade: '', className: '', wholeGrade: false },
@@ -567,18 +572,33 @@ function onFilePicked(e) {
     store.uploadFileName = f.name;
 }
 
+function onExamSelectChange(e) {
+    if (e.target.value === '__custom__') {
+        store.uploadForm.examName = '';
+        store.examCustom = true;
+    } else {
+        store.examCustom = false;
+    }
+}
+
 async function doUpload() {
     const grade = store.uploadForm.grade.trim();
     const className = store.uploadForm.className.trim();
-    const examName = store.uploadForm.examName.trim();
+    const year = store.uploadForm.year.trim();
+    const examType = store.uploadForm.examName.trim();
+    if (!/^\d{4}$/.test(year)) {
+        toast('请填写正确的年份（如：2026）', 'error');
+        return;
+    }
     if (!grade || !className) {
         toast('请填写年级和班级', 'error');
         return;
     }
-    if (!examName) {
-        toast('请填写考试名称（如：期中考试）', 'error');
+    if (!examType) {
+        toast('请选择考试类型（如：期中考试）', 'error');
         return;
     }
+    const examName = `${year}年${className}${examType}`;
     if (examName.length > 30) {
         toast('考试名称不能超过 30 个字符', 'error');
         return;
@@ -605,7 +625,8 @@ async function doUpload() {
         const data = await res.json();
         if (res.ok && data.success) {
             toast(`上传成功：${grade}${className} · ${examName}（${data.studentCount || 0} 名学生）`);
-            store.uploadForm = { grade: '', className: '', examName: '' };
+            store.uploadForm = { year: '', grade: '', className: '', examName: '' };
+            store.examCustom = false;
             uploadFile = null;
             store.uploadFileName = '';
             loadBuckets();
@@ -769,19 +790,37 @@ const DataPage = {
         <div class="p-6 space-y-6">
             <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
                 <h2 class="text-base font-semibold text-gray-800 mb-4"><i class="fas fa-file-upload text-blue-500 mr-2"></i>上传成绩单</h2>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div class="field">
+                        <label>年份</label>
+                        <input v-model="store.uploadForm.year" placeholder="如：2026">
+                    </div>
                     <div class="field">
                         <label>年级</label>
-                        <input list="grade-options" v-model="store.uploadForm.grade" placeholder="如：高一 / 三年级">
+                        <select v-model="store.uploadForm.grade">
+                            <option value="">请选择年级</option>
+                            <option v-for="g in GRADE_OPTIONS" :value="g">{{ g }}</option>
+                        </select>
                     </div>
                     <div class="field">
                         <label>班级</label>
-                        <input list="class-options" v-model="store.uploadForm.className" placeholder="如：3班">
+                        <select v-model="store.uploadForm.className">
+                            <option value="">请选择班级</option>
+                            <option v-for="c in CLASS_OPTIONS" :value="c">{{ c }}</option>
+                        </select>
                     </div>
                     <div class="field">
-                        <label>考试名称</label>
-                        <input list="exam-options" v-model="store.uploadForm.examName" placeholder="如：期中考试 / 月考1">
+                        <label>考试类型</label>
+                        <select v-model="store.uploadForm.examName" @change="onExamSelectChange">
+                            <option value="">请选择考试类型</option>
+                            <option v-for="e in EXAM_SUGGESTIONS" :value="e">{{ e }}</option>
+                            <option value="__custom__">自定义…</option>
+                        </select>
+                        <input v-if="store.examCustom" v-model="store.uploadForm.examName" class="mt-1" placeholder="输入自定义考试类型">
                     </div>
+                </div>
+                <div v-if="store.uploadForm.year && store.uploadForm.className && store.uploadForm.examName" class="text-xs text-blue-600 mt-2">
+                    考试名称将保存为：{{ store.uploadForm.year }}年{{ store.uploadForm.className }}{{ store.uploadForm.examName }}
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                     <div class="field md:col-span-2">
@@ -837,7 +876,7 @@ const DataPage = {
         </div>
     `,
     setup() {
-        return { store, loadBuckets, onFilePicked, doUpload, deleteDoc, deleteBucket, createSessionFromBucket };
+        return { store, loadBuckets, onFilePicked, onExamSelectChange, doUpload, deleteDoc, deleteBucket, createSessionFromBucket, GRADE_OPTIONS, CLASS_OPTIONS, EXAM_SUGGESTIONS };
     }
 };
 
