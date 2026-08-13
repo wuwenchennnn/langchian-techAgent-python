@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     redis_password: Optional[str] = None
     redis_password_enc: Optional[str] = None
     redis_dimension: int = 1024
+    redis_ttl_seconds: int = 2592000  # 会话聊天记忆保留时长（默认 30 天，写入时刷新；成绩数据永久保留）
+    chat_history_turns: int = 20      # 对话上下文保留消息条数（超过则生成滚动摘要）
 
     # 数据库配置
     database_url: str = "mysql+pymysql://root:password@localhost:3307/volunteer?charset=utf8mb4"
