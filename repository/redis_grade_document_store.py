@@ -9,9 +9,6 @@ import redis
 
 from config.settings import settings
 
-# 数据默认保留时间（秒）
-TTL_SECONDS = 86400
-
 
 def bucket_key(grade: str, className: str) -> str:
     """将（年级 + 班级）规范化为可读的桶 ID（原生 UTF-8，便于 Redis 查看）"""
@@ -33,6 +30,7 @@ class RedisGradeDocumentStore:
             self.redis_client.ping()
             self.connected = True
             self.migrate_legacy_encoded_keys()
+            self.persist_all_grade_keys()
         except Exception as e:
             print(f"Redis连接失败: {str(e)}")
             self.redis_client = None
@@ -59,9 +57,10 @@ class RedisGradeDocumentStore:
     def _bucket_chunks_key(cls, grade: str, className: str) -> str:
         return f"{cls._meta_key(grade, className)}:chunks"
 
-    def _set_ttl(self, key: str):
+    def _persist(self, key: str):
+        """成绩数据永久保留：清除已有 TTL，且后续写入不再设置过期时间"""
         if self.connected:
-            self.redis_client.expire(key, TTL_SECONDS)
+            self.redis_client.persist(key)
 
     # ---------- 旧版百分号编码 key 迁移（幂等） ----------
     def _copy_key(self, src: str, dst: str) -> bool:
@@ -82,7 +81,7 @@ class RedisGradeDocumentStore:
                 self.redis_client.rpush(dst, *vals)
             else:
                 return True
-            self._set_ttl(dst)
+            self._persist(dst)
             return True
         except Exception as e:
             print(f"Redis迁移复制失败: {str(e)}")
@@ -155,7 +154,7 @@ class RedisGradeDocumentStore:
                         new_meta_key,
                         json.dumps(metadata, ensure_ascii=False)
                     )
-                    self._set_ttl(new_meta_key)
+                    self._persist(new_meta_key)
                     self._delete_legacy_bucket(key, metadata)
                     migrated += 1
                 else:
@@ -163,6 +162,20 @@ class RedisGradeDocumentStore:
         except Exception as e:
             print(f"Redis迁移失败: {str(e)}")
         return migrated
+
+    def persist_all_grade_keys(self) -> int:
+        """启动时清除成绩数据所有 key 的过期时间（永久保留，兼容历史数据）"""
+        if not self.connected:
+            return 0
+        count = 0
+        try:
+            for key in self.redis_client.scan_iter(match="document:grade:bucket:*"):
+                if self.redis_client.type(key) in ("string", "list"):
+                    self.redis_client.persist(key)
+                    count += 1
+        except Exception as e:
+            print(f"Redis清除成绩数据过期时间失败: {str(e)}")
+        return count
 
     # ---------- 桶元数据与文档写入 ----------
     def store_document(self, grade: str, className: str, exam_name: str, text: str,
@@ -191,7 +204,7 @@ class RedisGradeDocumentStore:
                     *[json.dumps(c, ensure_ascii=False) for c in chunks]
                 )
             for key in (doc_key, records_key, chunks_key):
-                self._set_ttl(key)
+                self._persist(key)
 
             metadata = self.get_bucket_metadata(grade, className) or {
                 "grade": grade,
@@ -210,7 +223,7 @@ class RedisGradeDocumentStore:
             })
             metadata["docs"] = docs
             self.redis_client.set(meta_key, json.dumps(metadata, ensure_ascii=False))
-            self._set_ttl(meta_key)
+            self._persist(meta_key)
 
             self.rebuild_bucket_chunks(grade, className)
         except Exception as e:
@@ -326,7 +339,7 @@ class RedisGradeDocumentStore:
                     agg_key,
                     *[json.dumps(c, ensure_ascii=False) for c in all_chunks]
                 )
-                self._set_ttl(agg_key)
+                self._persist(agg_key)
         except Exception as e:
             print(f"Redis重建聚合chunk失败: {str(e)}")
 
@@ -369,7 +382,7 @@ class RedisGradeDocumentStore:
                         self._meta_key(grade, className),
                         json.dumps(metadata, ensure_ascii=False)
                     )
-                    self._set_ttl(self._meta_key(grade, className))
+                    self._persist(self._meta_key(grade, className))
                 else:
                     self.redis_client.delete(self._meta_key(grade, className))
             self.rebuild_bucket_chunks(grade, className)
