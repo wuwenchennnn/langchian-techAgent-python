@@ -12,6 +12,7 @@ from repository.redis_grade_document_store import RedisGradeDocumentStore, bucke
 from schemas.analysis import StudentScore
 from service.bucket_analyzer import BucketAnalyzer
 from service.grade_analyzer import GradeAnalyzer
+from service.grade_scope_analyzer import GradeScopeAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ class GradeDocumentService:
         # 内存缓存按桶（bucket_id）隔离
         self._bucket_analyzers: dict[str, BucketAnalyzer] = {}
         self._hybrid_retrievers: dict[str, HybridRetriever] = {}
+        # 年级级缓存（跨班对比）
+        self._grade_analyzers: dict[str, GradeScopeAnalyzer] = {}
+        self._grade_hybrids: dict[str, HybridRetriever] = {}
 
     # ---------- 上传与存储 ----------
     def upload_and_store(self, grade: str, class_name: str, exam_name: str, file) -> str:
@@ -161,18 +165,90 @@ class GradeDocumentService:
             self._hybrid_retrievers[bkey] = hybrid
         else:
             self._hybrid_retrievers.pop(bkey, None)
+        self._invalidate_grade(grade)
 
-    def get_analyzer(self, grade: str, class_name: str) -> Optional[BucketAnalyzer]:
-        """获取指定桶的分析器；缓存缺失时从 Redis 惰性重建"""
-        bkey = bucket_key(grade, class_name)
-        analyzer = self._bucket_analyzers.get(bkey)
-        if analyzer is None:
-            metadata = self.document_store.get_bucket_metadata(grade, class_name)
-            if not metadata or not metadata.get("docs"):
-                return None
-            self._rebuild_bucket_state(grade, class_name)
+    def get_analyzer(self, grade: str, class_name: Optional[str] = None):
+        """获取分析器：指定班级返回桶分析器；不指定返回年级级分析器（跨班对比）"""
+        if class_name:
+            bkey = bucket_key(grade, class_name)
             analyzer = self._bucket_analyzers.get(bkey)
-        return analyzer
+            if analyzer is None:
+                metadata = self.document_store.get_bucket_metadata(grade, class_name)
+                if not metadata or not metadata.get("docs"):
+                    return None
+                self._rebuild_bucket_state(grade, class_name)
+                analyzer = self._bucket_analyzers.get(bkey)
+            return analyzer
+
+        grade_analyzer = self._grade_analyzers.get(grade)
+        if grade_analyzer is None:
+            self._rebuild_grade_state(grade)
+            grade_analyzer = self._grade_analyzers.get(grade)
+        return grade_analyzer
+
+    # ---------- 年级级状态（跨班对比） ----------
+    def _invalidate_grade(self, grade: str):
+        """班级数据变化时失效对应年级的缓存"""
+        self._grade_analyzers.pop(grade, None)
+        self._grade_hybrids.pop(grade, None)
+
+    def _collect_grade_chunks(self, grade: str) -> List[dict]:
+        """收集该年级所有班级桶的聚合 chunks"""
+        all_chunks = []
+        for meta in self.document_store.list_buckets():
+            if meta.get("grade") != grade:
+                continue
+            class_name = meta.get("className", "")
+            if not class_name:
+                continue
+            chunks = self.document_store.get_bucket_chunks(grade, class_name)
+            if chunks:
+                all_chunks.extend(chunks)
+        return all_chunks
+
+    def _get_grade_full_text(self, grade: str) -> Optional[str]:
+        """年级级兜底：无向量时拼接该年级全部桶原文"""
+        parts = []
+        for meta in self.document_store.list_buckets():
+            if meta.get("grade") != grade:
+                continue
+            class_name = meta.get("className", "")
+            if not class_name:
+                continue
+            text = self.document_store.get_bucket_full_text(grade, class_name)
+            if text:
+                parts.append(f"【{grade}{class_name}】\n{text}")
+        return "\n\n---\n\n".join(parts) if parts else None
+
+    def _rebuild_grade_state(self, grade: str):
+        """从 Redis 重建年级级分析器与检索索引（跨班对比用）"""
+        buckets = {}
+        for meta in self.document_store.list_buckets():
+            if meta.get("grade") != grade:
+                continue
+            class_name = meta.get("className", "")
+            if not class_name:
+                continue
+            bkey = bucket_key(grade, class_name)
+            bucket_analyzer = self._bucket_analyzers.get(bkey)
+            if bucket_analyzer is None:
+                self._rebuild_bucket_state(grade, class_name)
+                bucket_analyzer = self._bucket_analyzers.get(bkey)
+            if bucket_analyzer is not None:
+                buckets[class_name] = bucket_analyzer
+
+        if buckets:
+            self._grade_analyzers[grade] = GradeScopeAnalyzer(grade, buckets)
+        else:
+            self._grade_analyzers.pop(grade, None)
+
+        chunks = self._collect_grade_chunks(grade)
+        if chunks:
+            hybrid = HybridRetriever(self.vector_retriever)
+            hybrid.index_chunks(chunks)
+            self._grade_hybrids[grade] = hybrid
+        else:
+            self._grade_hybrids.pop(grade, None)
 
     def _get_hybrid(self, grade: str, class_name: str, chunks: List[dict]) -> Optional[HybridRetriever]:
         bkey = bucket_key(grade, class_name)
@@ -183,13 +259,47 @@ class GradeDocumentService:
             self._hybrid_retrievers[bkey] = hybrid
         return hybrid
 
-    def get_relevant_content(self, grade: str, class_name: str, message: str) -> Optional[str]:
-        """按桶召回相关片段（向量 + BM25 + RRF + 重排序），无向量时退回桶内全文"""
-        chunks = self.document_store.get_bucket_chunks(grade, class_name)
-        if not chunks:
-            return self.document_store.get_bucket_full_text(grade, class_name)
+    def get_relevant_content(self, grade: str, class_name: Optional[str], message: str) -> Optional[str]:
+        """召回相关片段：单班按桶检索；年级级（class_name 为空）合并该年级全部班级检索"""
+        if class_name:
+            chunks = self.document_store.get_bucket_chunks(grade, class_name)
+            if not chunks:
+                return self.document_store.get_bucket_full_text(grade, class_name)
 
-        hybrid = self._get_hybrid(grade, class_name, chunks)
+            hybrid = self._get_hybrid(grade, class_name, chunks)
+            if hybrid:
+                try:
+                    candidates, scored = hybrid.retrieve(
+                        message,
+                        top_k=None,
+                        candidate_multiplier=3,
+                    )
+                    if scored:
+                        reranked = self.reranker.rerank(message, scored)
+                        contents = [c.get("content", "") for c in reranked]
+                        if contents:
+                            logger.info(
+                                "[混合检索+重排序] bucket=%s | 候选=%d → 返回=%d | 引擎=%s",
+                                bucket_key(grade, class_name), len(scored), len(contents),
+                                self._reranker_type
+                            )
+                            return "\n\n---\n\n".join(contents)
+                except Exception as e:
+                    logger.warning("混合检索失败，回退到纯向量检索: %s", e)
+
+            # 兜底：纯向量检索
+            return self.vector_retriever.retrieve(message, chunks)
+
+        # 年级级检索：合并该年级全部班级 chunks
+        chunks = self._collect_grade_chunks(grade)
+        if not chunks:
+            return self._get_grade_full_text(grade)
+
+        hybrid = self._grade_hybrids.get(grade)
+        if hybrid is None:
+            hybrid = HybridRetriever(self.vector_retriever)
+            hybrid.index_chunks(chunks)
+            self._grade_hybrids[grade] = hybrid
         if hybrid:
             try:
                 candidates, scored = hybrid.retrieve(
@@ -202,15 +312,13 @@ class GradeDocumentService:
                     contents = [c.get("content", "") for c in reranked]
                     if contents:
                         logger.info(
-                            "[混合检索+重排序] bucket=%s | 候选=%d → 返回=%d | 引擎=%s",
-                            bucket_key(grade, class_name), len(scored), len(contents),
-                            self._reranker_type
+                            "[年级级混合检索+重排序] grade=%s | 候选=%d → 返回=%d | 引擎=%s",
+                            grade, len(scored), len(contents), self._reranker_type
                         )
                         return "\n\n---\n\n".join(contents)
             except Exception as e:
-                logger.warning("混合检索失败，回退到纯向量检索: %s", e)
+                logger.warning("年级级混合检索失败，回退到纯向量检索: %s", e)
 
-        # 兜底：纯向量检索
         return self.vector_retriever.retrieve(message, chunks)
 
     # ---------- 桶列表与删除 ----------
@@ -228,6 +336,7 @@ class GradeDocumentService:
         bkey = bucket_key(grade, class_name)
         self._bucket_analyzers.pop(bkey, None)
         self._hybrid_retrievers.pop(bkey, None)
+        self._invalidate_grade(grade)
 
     # ---------- PDF / Excel 解析 ----------
     def _extract_text_from_pdf(self, pdf_content: bytes) -> str:

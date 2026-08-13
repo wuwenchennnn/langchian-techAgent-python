@@ -105,7 +105,7 @@
             </h1>
             <div class="text-sm text-gray-500">
                 当前范围：
-                <span v-if="currentSession && currentSession.grade" class="scope-badge">{{ currentSession.grade }}·{{ currentSession.className }}</span>
+                <span v-if="currentSession && currentSession.grade" class="scope-badge">{{ currentSession.grade }}·{{ currentSession.className || '全部班级' }}</span>
                 <span v-else class="text-gray-400">未选择</span>
             </div>
         </header>
@@ -124,7 +124,10 @@
             </div>
             <div class="field">
                 <label>班级</label>
-                <input list="class-options" v-model="store.scopeModal.className" placeholder="如：3班">
+                <input list="class-options" v-model="store.scopeModal.className" :disabled="store.scopeModal.wholeGrade" placeholder="如：3班">
+                <label class="mt-1 flex items-center gap-1 text-xs text-gray-500 cursor-pointer select-none">
+                    <input type="checkbox" v-model="store.scopeModal.wholeGrade" class="mr-1" @change="onWholeGradeToggle"> 整个年级（跨班对比，不指定班级）
+                </label>
             </div>
             <div class="modal-actions">
                 <button @click="closeScopeModal" class="btn btn-secondary">取消</button>
@@ -166,7 +169,7 @@ const store = reactive({
     uploadForm: { grade: '', className: '', examName: '' },
     uploadFileName: '',
     uploading: false,
-    scopeModal: { visible: false, mode: 'create', targetId: null, pendingAction: '', grade: '', className: '' },
+    scopeModal: { visible: false, mode: 'create', targetId: null, pendingAction: '', grade: '', className: '', wholeGrade: false },
 });
 
 const currentSession = computed(() => store.sessions.find(x => x.id === store.currentSessionId) || null);
@@ -431,7 +434,13 @@ function deleteSession(id) {
 }
 
 function openScopeModal(mode = 'create', targetId = null, pendingAction = '') {
-    store.scopeModal = { visible: true, mode, targetId, pendingAction, grade: '', className: '' };
+    store.scopeModal = { visible: true, mode, targetId, pendingAction, grade: '', className: '', wholeGrade: false };
+}
+
+function onWholeGradeToggle() {
+    if (store.scopeModal.wholeGrade) {
+        store.scopeModal.className = '';
+    }
 }
 
 function closeScopeModal() {
@@ -441,9 +450,9 @@ function closeScopeModal() {
 
 function confirmScope() {
     const grade = store.scopeModal.grade.trim();
-    const className = store.scopeModal.className.trim();
-    if (!grade || !className) {
-        toast('请填写年级和班级', 'error');
+    const className = store.scopeModal.wholeGrade ? '' : store.scopeModal.className.trim();
+    if (!grade) {
+        toast('请填写年级', 'error');
         return;
     }
     if (store.scopeModal.mode === 'assign' && store.scopeModal.targetId) {
@@ -472,7 +481,7 @@ async function sendMessage() {
         toast('请先新建会话', 'error');
         return;
     }
-    if (!s.grade || !s.className) {
+    if (!s.grade) {
         openScopeModal('assign', s.id, 'send');
         return;
     }
@@ -492,7 +501,10 @@ async function sendMessage() {
     persistSessionState();
 
     try {
-        const url = `${API_BASE}/ai/chat?message=${encodeURIComponent(msg)}&memoryId=${encodeURIComponent(s.id)}&grade=${encodeURIComponent(s.grade)}&className=${encodeURIComponent(s.className)}`;
+        let url = `${API_BASE}/ai/chat?message=${encodeURIComponent(msg)}&memoryId=${encodeURIComponent(s.id)}&grade=${encodeURIComponent(s.grade)}`;
+        if (s.className) {
+            url += `&className=${encodeURIComponent(s.className)}`;
+        }
         const res = await fetch(url, {signal: controller.signal});
         const result = await res.json();
         if (!res.ok) throw new Error(result.message || 'HTTP error');
@@ -672,7 +684,7 @@ const ChatPage = {
                             <i class="fas fa-times text-xs text-gray-400 hover:text-red-500 ml-2" @click.stop="deleteSession(s.id)"></i>
                         </div>
                         <div class="mt-1">
-                            <span v-if="s.grade" class="scope-badge">{{ s.grade }}·{{ s.className }}</span>
+                            <span v-if="s.grade" class="scope-badge">{{ s.grade }}·{{ s.className || '全部班级' }}</span>
                             <span v-else class="text-xs text-red-400">未设置范围</span>
                         </div>
                     </div>
@@ -683,7 +695,8 @@ const ChatPage = {
                 <div class="px-5 py-3 border-b flex items-center justify-between" :class="store.darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-white'">
                     <div class="flex items-center gap-2 min-w-0">
                         <span class="font-medium text-sm truncate" :class="store.darkMode ? 'text-gray-200' : 'text-gray-700'">{{ currentSession ? currentSession.name : '请先新建会话' }}</span>
-                        <span v-if="currentSession && currentSession.grade" class="scope-badge">{{ currentSession.grade }}·{{ currentSession.className }}</span>
+                        <span v-if="currentSession && currentSession.grade" class="scope-badge">{{ currentSession.grade }}·{{ currentSession.className || '全部班级' }}</span>
+                        <span v-if="currentSession && currentSession.grade && !currentSession.className" class="text-xs text-blue-500">跨班对比</span>
                         <span v-if="currentSession && !currentSession.grade" class="text-xs text-red-500 cursor-pointer hover:underline" @click="openScopeModal('assign', currentSession.id)">未设置范围，点击设置</span>
                     </div>
                     <button v-if="currentSession && currentSession.grade" @click="openScopeModal('assign', currentSession.id)" class="text-xs text-blue-500 hover:underline">切换范围</button>
@@ -885,7 +898,7 @@ createApp({
             store, PAGES, currentPage, currentPageKey, currentSession,
             GRADE_OPTIONS, CLASS_OPTIONS, EXAM_SUGGESTIONS,
             goToPage, toggleDarkMode,
-            openScopeModal, closeScopeModal, confirmScope
+            openScopeModal, closeScopeModal, confirmScope, onWholeGradeToggle
         };
     }
 }).mount('#app');

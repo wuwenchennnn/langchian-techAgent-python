@@ -16,6 +16,7 @@ CHART_TYPES = {
     "pianke_gap": "偏科学生差距分析（柱状图）",
     "class_overview": "班级成绩总览（多指标图）",
     "exam_compare": "各次考试对比（柱状图）",
+    "class_compare": "各班级对比（跨班柱状图）",
 }
 
 
@@ -24,6 +25,32 @@ class ChartGenerator:
 
     def __init__(self, analyzer: GradeAnalyzer):
         self.analyzer = analyzer
+
+    # ---------- 兼容单班 / 年级级分析器的取值辅助 ----------
+    def _overview(self, exam: str, className: str = ""):
+        if hasattr(self.analyzer, "resolve_class"):
+            return self.analyzer.get_class_overview(className=className, exam=exam or None)
+        return self.analyzer.get_class_overview(exam=exam or None)
+
+    def _student_detail(self, student_name: str, exam: str, className: str = ""):
+        if hasattr(self.analyzer, "resolve_class"):
+            return self.analyzer.get_student_detail(student_name, className=className, exam=exam or None)
+        return self.analyzer.get_student_detail(student_name, exam=exam or None)
+
+    def _subject_dist(self, subject: str, exam: str, className: str = ""):
+        if hasattr(self.analyzer, "resolve_class"):
+            return self.analyzer.get_subject_distribution(subject, className=className, exam=exam or None)
+        return self.analyzer.get_subject_distribution(subject, exam=exam or None)
+
+    def _top_students(self, n: int, exam: str, className: str = ""):
+        if hasattr(self.analyzer, "resolve_class"):
+            return self.analyzer.get_top_students(n, className=className, exam=exam or None)
+        return self.analyzer.get_top_students(n, exam=exam or None)
+
+    def _pianke_students(self, exam: str, className: str = ""):
+        if hasattr(self.analyzer, "resolve_class"):
+            return self.analyzer.get_pianke_students(className=className, exam=exam or None)
+        return self.analyzer.get_pianke_students(exam=exam or None)
 
     def generate(self, chart_type: str, **kwargs) -> Optional[str]:
         """
@@ -52,8 +79,8 @@ class ChartGenerator:
             return json.dumps({"error": f"图表生成失败: {e}"}, ensure_ascii=False)
 
     # ── 各科平均分对比 ──
-    def _gen_subject_avg(self, exam: str = "", **kwargs) -> Optional[dict]:
-        ov = self.analyzer.get_class_overview(exam=exam or None)
+    def _gen_subject_avg(self, exam: str = "", className: str = "", **kwargs) -> Optional[dict]:
+        ov = self._overview(exam, className)
         if not ov or not ov.subject_stats:
             return None
         return {
@@ -71,15 +98,15 @@ class ChartGenerator:
         }
 
     # ── 学生雷达图 ──
-    def _gen_student_radar(self, student_name: str = "", exam: str = "", **kwargs) -> Optional[dict]:
+    def _gen_student_radar(self, student_name: str = "", exam: str = "", className: str = "", **kwargs) -> Optional[dict]:
         if not student_name:
             return None
-        r = self.analyzer.get_student_detail(student_name, exam=exam or None)
+        r = self._student_detail(student_name, exam, className)
         if not r:
             return None
 
         # 班级各科平均分作为对比
-        ov = self.analyzer.get_class_overview(exam=exam or None)
+        ov = self._overview(exam, className)
         avg_map = {}
         if ov:
             avg_map = {ss.subject: ss.average for ss in ov.subject_stats}
@@ -103,10 +130,10 @@ class ChartGenerator:
         }
 
     # ── 科目分数段分布 ──
-    def _gen_subject_distribution(self, subject: str = "", exam: str = "", **kwargs) -> Optional[dict]:
+    def _gen_subject_distribution(self, subject: str = "", exam: str = "", className: str = "", **kwargs) -> Optional[dict]:
         if not subject:
             return None
-        d = self.analyzer.get_subject_distribution(subject, exam=exam or None)
+        d = self._subject_dist(subject, exam, className)
         if not d:
             return None
         dist = d.get("distribution", {})
@@ -128,8 +155,8 @@ class ChartGenerator:
         }
 
     # ── 总分排名 ──
-    def _gen_top_students(self, n: int = 10, exam: str = "", **kwargs) -> Optional[dict]:
-        items = self.analyzer.get_top_students(n, exam=exam or None)
+    def _gen_top_students(self, n: int = 10, exam: str = "", className: str = "", **kwargs) -> Optional[dict]:
+        items = self._top_students(n, exam, className)
         if not items:
             return None
         names = [item["name"] for item in items]
@@ -150,14 +177,14 @@ class ChartGenerator:
         }
 
     # ── 偏科差距 ──
-    def _gen_pianke_gap(self, exam: str = "", **kwargs) -> Optional[dict]:
-        names = self.analyzer.get_pianke_students(exam=exam or None)
+    def _gen_pianke_gap(self, exam: str = "", className: str = "", **kwargs) -> Optional[dict]:
+        names = self._pianke_students(exam, className)
         if not names:
             return None
 
         gaps = []
         for name in names:
-            r = self.analyzer.get_student_detail(name, exam=exam or None)
+            r = self._student_detail(name, exam, className)
             if r and r.subjects:
                 scores = [s.score for s in r.subjects]
                 gap = max(scores) - min(scores)
@@ -183,8 +210,8 @@ class ChartGenerator:
         }
 
     # ── 班级总览 ──
-    def _gen_class_overview(self, exam: str = "", **kwargs) -> Optional[dict]:
-        ov = self.analyzer.get_class_overview(exam=exam or None)
+    def _gen_class_overview(self, exam: str = "", className: str = "", **kwargs) -> Optional[dict]:
+        ov = self._overview(exam, className)
         if not ov or not ov.subject_stats:
             return None
         return {
@@ -204,8 +231,20 @@ class ChartGenerator:
         }
 
     # ── 各次考试对比 ──
-    def _gen_exam_compare(self, subject: str = "", **kwargs) -> Optional[dict]:
-        exams = self.analyzer.list_exams()
+    def _gen_exam_compare(self, subject: str = "", className: str = "", **kwargs) -> Optional[dict]:
+        # 年级级作用域下需指定班级，委托到该班级的桶分析器
+        if hasattr(self.analyzer, "resolve_class"):
+            if not className:
+                return None
+            resolved = self.analyzer.resolve_class(className)
+            bucket = self.analyzer.class_analyzer(resolved or className)
+            if bucket is None:
+                return None
+            analyzer = bucket
+        else:
+            analyzer = self.analyzer
+
+        exams = analyzer.list_exams()
         if len(exams) < 2:
             return None
 
@@ -213,7 +252,7 @@ class ChartGenerator:
             # 指定科目：各次考试该科平均分
             averages = []
             for exam in exams:
-                dist = self.analyzer.get_subject_distribution(subject, exam=exam)
+                dist = analyzer.get_subject_distribution(subject, exam=exam)
                 averages.append(dist["average"] if dist else None)
             return {
                 "type": "bar",
@@ -233,7 +272,7 @@ class ChartGenerator:
         all_subjects = []
         subject_avgs = {}
         for exam in exams:
-            overview = self.analyzer.get_class_overview(exam=exam)
+            overview = analyzer.get_class_overview(exam=exam)
             if not overview:
                 continue
             avg_map = {ss.subject: ss.average for ss in overview.subject_stats}
@@ -256,6 +295,88 @@ class ChartGenerator:
         return {
             "type": "bar",
             "title": "各次考试各科平均分对比",
+            "xAxis": all_subjects,
+            "series": series,
+            "option": {
+                "yAxis": {"name": "分数"},
+                "tooltip": {},
+                "legend": {},
+            },
+        }
+
+    # ── 各班级对比（跨班） ──
+    def _gen_class_compare(self, exam: str = "", subject: str = "", **kwargs) -> Optional[dict]:
+        if not hasattr(self.analyzer, "list_classes"):
+            return None
+        classes = self.analyzer.list_classes()
+        if len(classes) < 2:
+            return None
+
+        exam_name = self.analyzer.latest_common_exam()
+        if exam:
+            found_any = False
+            for c in classes:
+                bucket = self.analyzer.class_analyzer(c)
+                if bucket:
+                    found = bucket.resolve_exam(exam)
+                    if found:
+                        exam_name = found
+                        found_any = True
+                        break
+            if not found_any:
+                exam_name = None
+        if exam_name is None:
+            return None
+
+        class_analyzers = []
+        for c in classes:
+            bucket = self.analyzer.class_analyzer(c)
+            grade_analyzer = bucket.get_exam_analyzer(exam_name) if bucket else None
+            if grade_analyzer is not None:
+                class_analyzers.append((c, grade_analyzer))
+        if len(class_analyzers) < 2:
+            return None
+
+        if subject:
+            averages = []
+            for c, ga in class_analyzers:
+                dist = ga.get_subject_distribution(subject)
+                averages.append(dist["average"] if dist else None)
+            return {
+                "type": "bar",
+                "title": f"{subject} 各班级平均分对比（{exam_name}）",
+                "xAxis": [c for c, _ in class_analyzers],
+                "series": [{
+                    "name": "平均分",
+                    "data": averages,
+                }],
+                "option": {
+                    "yAxis": {"name": "分数"},
+                    "tooltip": {},
+                },
+            }
+
+        all_subjects = []
+        subject_avgs = {}
+        for c, ga in class_analyzers:
+            overview = ga.get_class_overview()
+            if not overview:
+                continue
+            avg_map = {ss.subject: ss.average for ss in overview.subject_stats}
+            subject_avgs[c] = avg_map
+            for subj in avg_map:
+                if subj not in all_subjects:
+                    all_subjects.append(subj)
+        if not all_subjects:
+            return None
+
+        series = [
+            {"name": c, "data": [subject_avgs.get(c, {}).get(s) for s in all_subjects]}
+            for c, _ in class_analyzers
+        ]
+        return {
+            "type": "bar",
+            "title": f"各班级各科平均分对比（{exam_name}）",
             "xAxis": all_subjects,
             "series": series,
             "option": {

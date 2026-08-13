@@ -34,15 +34,32 @@ def _require_scope(grade: str, className: str, exam_name: str = None):
     return grade, className
 
 
-@router.post("/upload", response_model=UploadResponse)
+def _require_grade(grade: str) -> str:
+    """校验年级非空（聊天作用域：班级可选，空 = 整个年级）"""
+    grade = (grade or "").strip()
+    if not grade:
+        raise BadRequestException("年级不能为空")
+    return grade
+
+
+@router.post("/upload", response_model=UploadResponse, summary="上传成绩单")
 async def upload_grade_document(
-    memoryId: str = Form(...),
-    grade: str = Form(...),
-    className: str = Form(...),
-    examName: str = Form(...),
-    file: UploadFile = File(...)
+    memoryId: str = Form(..., description="前端生成的会话 ID"),
+    grade: str = Form(..., description="年级，如：高一"),
+    className: str = Form(..., description="班级，如：3班"),
+    examName: str = Form(..., description="考试名称，如：期中考试（同班同名考试重复上传视为覆盖）"),
+    file: UploadFile = File(..., description="成绩单文件（PDF / .xlsx / .xls）")
 ) -> UploadResponse:
-    """上传成绩文档到（年级+班级）桶，考试名称用于区分同桶多份成绩单"""
+    """上传成绩文档到（年级+班级）桶，考试名称用于区分同桶多份成绩单
+
+    使用示例（curl）：
+        curl -X POST http://127.0.0.1:8000/ai/upload \
+          -F "memoryId=session-001" \
+          -F "grade=高一" \
+          -F "className=3班" \
+          -F "examName=期中考试" \
+          -F "file=@高一3班期中.xlsx"
+    """
     if not memoryId or memoryId.isspace():
         raise BadRequestException("memoryId 不能为空")
     grade, className, examName = _require_scope(grade, className, examName)
@@ -66,24 +83,30 @@ async def upload_grade_document(
         raise BadRequestException(str(e))
 
 
-@router.get("/chat", response_model=ChatResponse)
+@router.get("/chat", response_model=ChatResponse, summary="成绩分析对话（非流式）")
 async def chat(
-    memoryId: str = Query(...),
-    message: str = Query(...),
-    grade: str = Query(...),
-    className: str = Query(...)
+    memoryId: str = Query(..., description="会话 ID"),
+    message: str = Query(..., description="用户问题"),
+    grade: str = Query(..., description="年级，如：高一"),
+    className: str = Query("", description="班级（可选）：如 3班；为空时范围为整个年级，支持跨班对比")
 ) -> ChatResponse:
-    """非流式对话：检索与分析仅作用于（年级+班级）桶"""
+    """非流式对话：检索与分析作用于（年级+班级）桶；班级为空时为整个年级范围（跨班对比）
+
+    使用示例：
+        GET /ai/chat?memoryId=session-001&message=各科平均分是多少&grade=高一&className=3班
+        GET /ai/chat?memoryId=session-001&message=对比3班和5班的语文平均分&grade=高一
+    """
     if not memoryId or memoryId.isspace():
         raise BadRequestException("memoryId 不能为空")
     if not message or message.isspace():
         raise BadRequestException("message 不能为空")
-    grade, className = _require_scope(grade, className)
+    grade = _require_grade(grade)
+    className = (className or "").strip()
 
-    analyzer = grade_document_service.get_analyzer(grade, className)
+    analyzer = grade_document_service.get_analyzer(grade, className or None)
 
     def search_fn(q):
-        return grade_document_service.get_relevant_content(grade, className, q)
+        return grade_document_service.get_relevant_content(grade, className or None, q)
 
     try:
         full_text = await consultant_service.chat(memoryId, message, analyzer, search_fn)
@@ -92,24 +115,31 @@ async def chat(
         return ChatResponse(status=0, message=str(e), data=None)
 
 
-@router.get("/chat/stream")
+@router.get("/chat/stream", summary="成绩分析对话（SSE 流式）")
 async def chat_stream(
-    memoryId: str = Query(...),
-    message: str = Query(...),
-    grade: str = Query(...),
-    className: str = Query(...)
+    memoryId: str = Query(..., description="会话 ID"),
+    message: str = Query(..., description="用户问题"),
+    grade: str = Query(..., description="年级，如：高一"),
+    className: str = Query("", description="班级（可选）：如 3班；为空时范围为整个年级，支持跨班对比")
 ):
-    """SSE 流式对话：检索与分析仅作用于（年级+班级）桶"""
+    """SSE 流式对话：检索与分析作用于（年级+班级）桶；班级为空时为整个年级范围（跨班对比）
+
+    使用示例：
+        GET /ai/chat/stream?memoryId=session-001&message=分析班级整体情况&grade=高一&className=3班
+
+    返回格式：text/event-stream，逐行 `data: {"token": "..."}`，结束时输出 `data: [DONE]`。
+    """
     if not memoryId or memoryId.isspace():
         raise BadRequestException("memoryId 不能为空")
     if not message or message.isspace():
         raise BadRequestException("message 不能为空")
-    grade, className = _require_scope(grade, className)
+    grade = _require_grade(grade)
+    className = (className or "").strip()
 
-    analyzer = grade_document_service.get_analyzer(grade, className)
+    analyzer = grade_document_service.get_analyzer(grade, className or None)
 
     def search_fn(q):
-        return grade_document_service.get_relevant_content(grade, className, q)
+        return grade_document_service.get_relevant_content(grade, className or None, q)
 
     async def event_generator():
         try:
@@ -133,9 +163,12 @@ async def chat_stream(
     )
 
 
-@router.get("/buckets", response_model=BucketListResponse)
+@router.get("/buckets", response_model=BucketListResponse, summary="列出已有数据桶")
 async def list_buckets() -> BucketListResponse:
-    """列出所有（年级+班级）桶及其考试文档"""
+    """列出所有（年级+班级）桶及其考试文档
+
+    使用示例：GET /ai/buckets
+    """
     buckets = grade_document_service.list_buckets()
     infos = []
     for b in buckets:
@@ -148,32 +181,42 @@ async def list_buckets() -> BucketListResponse:
     return BucketListResponse(success=True, buckets=infos)
 
 
-@router.delete("/document", response_model=SessionResponse)
+@router.delete("/document", response_model=SessionResponse, summary="删除单份考试文档")
 async def delete_document(
-    grade: str = Query(...),
-    className: str = Query(...),
-    examName: str = Query(...),
+    grade: str = Query(..., description="年级，如：高一"),
+    className: str = Query(..., description="班级，如：3班"),
+    examName: str = Query(..., description="考试名称，如：期中考试"),
 ) -> SessionResponse:
-    """删除桶内单份考试文档"""
+    """删除桶内单份考试文档
+
+    使用示例：
+        DELETE /ai/document?grade=高一&className=3班&examName=期中考试
+    """
     grade, className, examName = _require_scope(grade, className, examName)
     grade_document_service.delete_document(grade, className, examName)
     return SessionResponse(success=True, message="成绩文档已删除")
 
 
-@router.delete("/bucket", response_model=SessionResponse)
+@router.delete("/bucket", response_model=SessionResponse, summary="删除整个（年级+班级）桶")
 async def delete_bucket(
-    grade: str = Query(...),
-    className: str = Query(...),
+    grade: str = Query(..., description="年级，如：高一"),
+    className: str = Query(..., description="班级，如：3班"),
 ) -> SessionResponse:
-    """删除整个（年级+班级）桶及其全部考试文档"""
+    """删除整个（年级+班级）桶及其全部考试文档
+
+    使用示例：DELETE /ai/bucket?grade=高一&className=3班
+    """
     grade, className = _require_scope(grade, className)
     grade_document_service.delete_bucket(grade, className)
     return SessionResponse(success=True, message="该年级班级数据已删除")
 
 
-@router.delete("/session", response_model=SessionResponse)
-async def close_session(memoryId: str) -> SessionResponse:
-    """关闭会话：只清除聊天记忆；桶数据可能被多个会话共享，不再删除"""
+@router.delete("/session", response_model=SessionResponse, summary="关闭会话（清除聊天记忆）")
+async def close_session(memoryId: str = Query(..., description="会话 ID")) -> SessionResponse:
+    """关闭会话：只清除聊天记忆；桶数据可能被多个会话共享，不再删除
+
+    使用示例：DELETE /ai/session?memoryId=session-001
+    """
     if not memoryId or memoryId.isspace():
         raise BadRequestException("memoryId 不能为空")
     redis_chat_memory_store.delete_messages(memoryId)

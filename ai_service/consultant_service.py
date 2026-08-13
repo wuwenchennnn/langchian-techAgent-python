@@ -3,7 +3,7 @@
 import json
 import logging
 import time
-from typing import AsyncIterator, Optional, Callable
+from typing import AsyncIterator, Optional, Callable, Union
 
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
@@ -13,6 +13,7 @@ from langgraph.prebuilt import create_react_agent
 from config.settings import settings
 from service.bucket_analyzer import BucketAnalyzer
 from service.chart_generator import ChartGenerator
+from service.grade_scope_analyzer import GradeScopeAnalyzer
 from repository.redis_chat_memory_store import RedisChatMemoryStore
 
 logger = logging.getLogger(__name__)
@@ -34,8 +35,16 @@ SYSTEM_PROMPT = (
     "5. 生成图表后，用简短文字总结图表反映的关键信息\n"
     "6. 数据可能包含多次考试（如期中、期末、月考）。回答涉及具体数据时，必须注明考试名称\n"
     "7. 用户询问两次或多次考试的成绩对比、变化趋势时，调用 compare_exams 工具\n"
-    "8. 分析工具均支持可选 exam 参数（考试名称），未指定时默认使用最近一次上传的考试\n"
-    "9. 检索片段会标注【年级班级·考试名】，引用时注意区分考试"
+    "8. 分析工具均支持可选 exam 参数（考试名称），未指定时默认使用最近一次上传的考试；多班级（全年级）范围下，涉及班级的分析需通过 className 参数指定班级\n"
+    "9. 检索片段会标注【年级班级·考试名】，引用时注意区分考试\n"
+    "10. 用户询问不同班级之间的成绩对比时，必须调用 compare_classes 工具，回答注明班级与考试名称"
+)
+
+
+SUMMARY_SYSTEM_PROMPT = (
+    "你是一名对话摘要助手。请把下面的对话内容压缩成简洁的中文要点摘要，"
+    "保留：用户关注的问题主题、涉及的年级/班级/考试、已得出的关键结论与分析结果。"
+    "不要编造原文没有的信息，控制在 200 字以内，直接输出摘要正文，不要添加其他说明。"
 )
 
 
@@ -51,19 +60,41 @@ def _resolve_exam(analyzer: BucketAnalyzer, exam: str):
     return resolved, None
 
 
-def _build_analysis_tools(analyzer: BucketAnalyzer, search_fn: Callable):
-    """基于 BucketAnalyzer 构建 ReAct 工具集（支持按考试选择与跨考试对比）"""
+def _class_err(analyzer, className: str):
+    """年级级作用域下解析班级；返回 (班级名 或 None, 错误信息 或 None)"""
+    if not hasattr(analyzer, "resolve_class"):
+        return None, None
+    className = (className or "").strip()
+    classes = analyzer.list_classes()
+    if not className:
+        if len(classes) == 1:
+            return classes[0], None
+        return None, f"请指定要分析的班级。当前年级下的班级：{'、'.join(classes) or '（暂无）'}"
+    resolved = analyzer.resolve_class(className)
+    if resolved is None:
+        return None, f"未找到班级「{className}」。当前年级下的班级：{'、'.join(classes) or '（暂无）'}"
+    return resolved, None
+
+
+def _build_analysis_tools(analyzer: Union[BucketAnalyzer, GradeScopeAnalyzer], search_fn: Callable):
+    """构建 ReAct 工具集（支持按考试/班级选择、跨考试与跨班级对比）"""
 
     @tool
-    def get_class_overview(exam: str = "") -> str:
-        """获取指定考试（默认最近一次）的班级整体成绩概览：各科平均分、最高/最低分、及格率、优秀率、总分前5名。参数 exam：考试名称（如期中、期末），可留空"""
-        resolved, err = _resolve_exam(analyzer, exam)
+    def get_class_overview(exam: str = "", className: str = "") -> str:
+        """获取指定考试（默认最近一次）的班级整体成绩概览：各科平均分、最高/最低分、及格率、优秀率、总分前5名。参数 exam：考试名称（如期中、期末），可留空；className：班级名称，多班级（全年级）范围下必填，单班级范围可留空"""
+        cls, err = _class_err(analyzer, className)
         if err:
             return err
-        ov = analyzer.get_class_overview(exam=resolved)
+        bucket = analyzer if cls is None else analyzer.class_analyzer(cls)
+        if bucket is None:
+            return f"未找到班级「{className}」的数据。"
+        resolved, err = _resolve_exam(bucket, exam)
+        if err:
+            return err
+        ov = bucket.get_class_overview(exam=resolved)
         if not ov:
             return "暂无成绩数据，请先上传成绩单。"
-        exam_label = f"【{resolved or analyzer.latest_exam()}】" if analyzer.list_exams() else ""
+        exam_label = f"【{resolved or bucket.latest_exam()}】" if bucket.list_exams() else ""
         lines = [f"{exam_label}共 {ov.total_students} 名学生，{len(ov.subjects)} 门科目。", ""]
         for ss in ov.subject_stats:
             lines.append(
@@ -77,14 +108,20 @@ def _build_analysis_tools(analyzer: BucketAnalyzer, search_fn: Callable):
         return "\n".join(lines)
 
     @tool
-    def get_student_detail(student_name: str, exam: str = "") -> str:
-        """获取指定学生在指定考试（默认最近一次）的详细分析：各科成绩、排名、优势/薄弱科目、是否偏科。参数：student_name、exam（考试名称，可留空）"""
-        resolved, err = _resolve_exam(analyzer, exam)
+    def get_student_detail(student_name: str, exam: str = "", className: str = "") -> str:
+        """获取指定学生在指定考试（默认最近一次）的详细分析：各科成绩、排名、优势/薄弱科目、是否偏科。参数：student_name、exam（考试名称，可留空）、className（班级名称，多班级范围下必填）"""
+        cls, err = _class_err(analyzer, className)
         if err:
             return err
-        r = analyzer.get_student_detail(student_name, exam=resolved)
+        bucket = analyzer if cls is None else analyzer.class_analyzer(cls)
+        if bucket is None:
+            return f"未找到班级「{className}」的数据。"
+        resolved, err = _resolve_exam(bucket, exam)
+        if err:
+            return err
+        r = bucket.get_student_detail(student_name, exam=resolved)
         if not r:
-            names = "，".join(analyzer.student_names(exam=resolved)[:20])
+            names = "，".join(bucket.student_names(exam=resolved)[:20])
             return f"未找到学生「{student_name}」。当前成绩单中的学生：{names}"
         lines = [
             f"【{r.student_name}】总分={r.total_score}，平均分={r.average_score}，排名={r.rank}/{r.total_students}",
@@ -101,26 +138,38 @@ def _build_analysis_tools(analyzer: BucketAnalyzer, search_fn: Callable):
         return "\n".join(lines)
 
     @tool
-    def get_subject_distribution(subject: str, exam: str = "") -> str:
-        """获取指定科目在指定考试（默认最近一次）的分数段分布。参数：subject（科目名称）、exam（考试名称，可留空）"""
-        resolved, err = _resolve_exam(analyzer, exam)
+    def get_subject_distribution(subject: str, exam: str = "", className: str = "") -> str:
+        """获取指定科目在指定考试（默认最近一次）的分数段分布。参数：subject（科目名称）、exam（考试名称，可留空）、className（班级名称，多班级范围下必填）"""
+        cls, err = _class_err(analyzer, className)
         if err:
             return err
-        d = analyzer.get_subject_distribution(subject, exam=resolved)
+        bucket = analyzer if cls is None else analyzer.class_analyzer(cls)
+        if bucket is None:
+            return f"未找到班级「{className}」的数据。"
+        resolved, err = _resolve_exam(bucket, exam)
+        if err:
+            return err
+        d = bucket.get_subject_distribution(subject, exam=resolved)
         if not d:
-            return f"未找到科目「{subject}」。当前可用的科目：{'，'.join(analyzer.subjects(exam=resolved))}"
+            return f"未找到科目「{subject}」。当前可用的科目：{'，'.join(bucket.subjects(exam=resolved))}"
         lines = [f"【{d['subject']}】共 {d['count']} 人，平均分={d['average']}", "分数段分布："]
         for seg, count in d["distribution"].items():
             lines.append(f"  {seg}：{count} 人")
         return "\n".join(lines)
 
     @tool
-    def get_top_students(n: int = 5, exam: str = "") -> str:
-        """获取指定考试（默认最近一次）总分前 N 名学生。参数：n（默认5）、exam（考试名称，可留空）"""
-        resolved, err = _resolve_exam(analyzer, exam)
+    def get_top_students(n: int = 5, exam: str = "", className: str = "") -> str:
+        """获取指定考试（默认最近一次）总分前 N 名学生。参数：n（默认5）、exam（考试名称，可留空）、className（班级名称，多班级范围下必填）"""
+        cls, err = _class_err(analyzer, className)
         if err:
             return err
-        items = analyzer.get_top_students(n, exam=resolved)
+        bucket = analyzer if cls is None else analyzer.class_analyzer(cls)
+        if bucket is None:
+            return f"未找到班级「{className}」的数据。"
+        resolved, err = _resolve_exam(bucket, exam)
+        if err:
+            return err
+        items = bucket.get_top_students(n, exam=resolved)
         if not items:
             return "暂无成绩数据。"
         lines = [f"总分前 {n} 名："]
@@ -129,26 +178,38 @@ def _build_analysis_tools(analyzer: BucketAnalyzer, search_fn: Callable):
         return "\n".join(lines)
 
     @tool
-    def get_pianke_students(exam: str = "") -> str:
-        """检测指定考试（默认最近一次）中存在明显偏科的学生（最高分与最低分差距超过30分）。参数：exam（考试名称，可留空）"""
-        resolved, err = _resolve_exam(analyzer, exam)
+    def get_pianke_students(exam: str = "", className: str = "") -> str:
+        """检测指定考试（默认最近一次）中存在明显偏科的学生（最高分与最低分差距超过30分）。参数：exam（考试名称，可留空）、className（班级名称，多班级范围下必填）"""
+        cls, err = _class_err(analyzer, className)
         if err:
             return err
-        names = analyzer.get_pianke_students(exam=resolved)
+        bucket = analyzer if cls is None else analyzer.class_analyzer(cls)
+        if bucket is None:
+            return f"未找到班级「{className}」的数据。"
+        resolved, err = _resolve_exam(bucket, exam)
+        if err:
+            return err
+        names = bucket.get_pianke_students(exam=resolved)
         if not names:
             return "未检测到明显偏科的学生。"
         return f"共 {len(names)} 名学生可能存在偏科：\n" + "\n".join(f"  - {n}" for n in names)
 
     @tool
-    def get_weakest_subject(exam: str = "") -> str:
-        """找出指定考试（默认最近一次）全班平均分最低的科目。参数：exam（考试名称，可留空）"""
-        resolved, err = _resolve_exam(analyzer, exam)
+    def get_weakest_subject(exam: str = "", className: str = "") -> str:
+        """找出指定考试（默认最近一次）全班平均分最低的科目。参数：exam（考试名称，可留空）、className（班级名称，多班级范围下必填）"""
+        cls, err = _class_err(analyzer, className)
         if err:
             return err
-        subj = analyzer.get_weakest_subject(exam=resolved)
+        bucket = analyzer if cls is None else analyzer.class_analyzer(cls)
+        if bucket is None:
+            return f"未找到班级「{className}」的数据。"
+        resolved, err = _resolve_exam(bucket, exam)
+        if err:
+            return err
+        subj = bucket.get_weakest_subject(exam=resolved)
         if not subj:
             return "暂无成绩数据。"
-        dist = analyzer.get_subject_distribution(subj, exam=resolved)
+        dist = bucket.get_subject_distribution(subj, exam=resolved)
         lines = [f"全班最薄弱科目：{subj}"]
         if dist:
             lines.append(f"  平均分={dist['average']}，共 {dist['count']} 人")
@@ -158,40 +219,60 @@ def _build_analysis_tools(analyzer: BucketAnalyzer, search_fn: Callable):
 
     @tool
     def search_grade_document(query: str) -> str:
-        """在当前（年级+班级）桶的原始成绩单中搜索相关信息。参数：搜索关键词"""
+        """在当前成绩数据（单班或全年级范围）中搜索相关信息。参数：搜索关键词"""
         result = search_fn(query)
         return result if result else "在文档中未找到匹配的内容。"
 
     @tool
-    def compare_exams(subject: str = "", student_name: str = "") -> str:
-        """对比同一班级不同考试（期中/期末/月考等）的成绩：可按科目或学生对比，不传参数时对比班级整体。参数：subject（科目名称）、student_name（学生姓名）"""
-        result = analyzer.compare_exams(subject=subject, student_name=student_name)
+    def compare_exams(subject: str = "", student_name: str = "", className: str = "") -> str:
+        """对比同一班级不同考试（期中/期末/月考等）的成绩：可按科目或学生对比，不传参数时对比班级整体。参数：subject（科目名称）、student_name（学生姓名）、className（班级名称，多班级范围下必填）"""
+        cls, err = _class_err(analyzer, className)
+        if err:
+            return err
+        bucket = analyzer if cls is None else analyzer.class_analyzer(cls)
+        if bucket is None:
+            return f"未找到班级「{className}」的数据。"
+        result = bucket.compare_exams(subject=subject, student_name=student_name)
         if not result:
             return "暂无多次考试数据可对比。"
         return result
 
     @tool
-    def get_chart_data(chart_type: str, student_name: str = "", subject: str = "", exam: str = "", n: int = 10) -> str:
-        """生成成绩可视化图表数据，返回前端 ECharts 可渲染的 JSON。chart_type 可选：subject_avg(各科平均分柱状图)/student_radar(学生雷达图)/subject_distribution(分数段分布)/top_students(总分排名)/pianke_gap(偏科差距)/class_overview(班级总览)/exam_compare(各次考试对比)。可选参数 student_name、subject、exam（考试名称）、n(默认10)"""
+    def compare_classes(classes: str = "", subject: str = "", exam: str = "") -> str:
+        """对比同一年级不同班级的成绩（需当前会话为全年级范围）。参数：classes（班级列表，逗号分隔，缺省为全部班级）、subject（科目名称，可选）、exam（考试名称，可选，缺省为各班共有的最近一次考试）"""
+        if not hasattr(analyzer, "compare_classes"):
+            return "当前会话为单个班级范围，无法跨班对比；请新建「全部班级」范围的会话。"
+        result = analyzer.compare_classes(classes=classes, subject=subject, exam=exam)
+        if not result:
+            return "暂无可对比的班级数据。"
+        return result
+
+    @tool
+    def get_chart_data(chart_type: str, student_name: str = "", subject: str = "", exam: str = "", className: str = "", n: int = 10) -> str:
+        """生成成绩可视化图表数据，返回前端 ECharts 可渲染的 JSON。chart_type 可选：subject_avg(各科平均分柱状图)/student_radar(学生雷达图)/subject_distribution(分数段分布)/top_students(总分排名)/pianke_gap(偏科差距)/class_overview(班级总览)/exam_compare(各次考试对比)/class_compare(各班级对比)。可选参数 student_name、subject、exam（考试名称）、className（班级名称，多班级范围下必填）、n(默认10)"""
         chart_gen = ChartGenerator(analyzer)
         result = chart_gen.generate(
             chart_type,
             student_name=student_name,
             subject=subject,
             exam=exam,
+            className=className,
             n=n,
         )
         if result:
             return "::chart::" + result
         return "图表生成失败"
 
-    return [
+    tools = [
         get_class_overview, get_student_detail, get_subject_distribution,
         get_top_students, get_pianke_students, get_weakest_subject,
         search_grade_document,
         compare_exams,
         get_chart_data,
     ]
+    if hasattr(analyzer, "compare_classes"):
+        tools.append(compare_classes)
+    return tools
 
 
 class ConsultantService:
@@ -210,7 +291,7 @@ class ConsultantService:
         )
 
     async def chat(self, memory_id: str, message: str,
-                   analyzer: Optional[BucketAnalyzer] = None,
+                   analyzer: Optional[Union[BucketAnalyzer, GradeScopeAnalyzer]] = None,
                    search_fn: Optional[Callable] = None) -> str:
         """非流式对话：通过 ReAct Agent 一次性返回完整回复"""
         result = []
@@ -219,7 +300,7 @@ class ConsultantService:
         return "".join(result)
 
     async def chat_stream(self, memory_id: str, message: str,
-                           analyzer: Optional[BucketAnalyzer] = None,
+                           analyzer: Optional[Union[BucketAnalyzer, GradeScopeAnalyzer]] = None,
                            search_fn: Optional[Callable] = None):
         """SSE 流式对话：逐 token 返回 ReAct Agent 的推理过程"""
 
@@ -314,13 +395,31 @@ class ConsultantService:
         self._save_history(memory_id, message, response_text)
 
     def _get_history(self, memory_id: str):
-        """从 Redis 读取会话历史，转换为 LangChain 消息对象（最近 20 条）"""
+        """读取会话历史：超过阈值时生成滚动摘要，上下文 = 摘要 + 最近 N 条原文"""
         raw = self.memory_store.get_messages(memory_id)
         raw.reverse()
-        raw = raw[-20:]
+        limit = settings.chat_history_turns
+        summary = self.memory_store.get_summary(memory_id)
+
+        if len(raw) > limit:
+            overflow = raw[:len(raw) - limit]
+            recent = raw[-limit:]
+            summary = self._build_rolling_summary(memory_id, summary, overflow)
+            if summary:
+                self.memory_store.save_summary(memory_id, summary)
+            # 已摘要的旧消息从列表移除，保持列表有界
+            self.memory_store.trim_messages(memory_id, limit)
+            logger.info(
+                "[滚动摘要] memory_id=%s | 溢出=%d 条 | 保留最近 %d 条",
+                memory_id, len(overflow), limit
+            )
+        else:
+            recent = raw
 
         messages = []
-        for item in raw:
+        if summary:
+            messages.append(SystemMessage(content=f"以下是更早对话的摘要：\n{summary}"))
+        for item in recent:
             role = item.get("role", "")
             content = item.get("content", "")
             if role == "user":
@@ -328,6 +427,31 @@ class ConsultantService:
             elif role == "assistant":
                 messages.append(AIMessage(content=content))
         return messages
+
+    def _build_rolling_summary(self, memory_id: str, existing_summary: Optional[str],
+                               overflow_messages: list) -> str:
+        """调用 LLM 将已有摘要 + 溢出消息压缩为新的滚动摘要（失败时保留旧摘要）"""
+        parts = []
+        if existing_summary:
+            parts.append(f"已有摘要：\n{existing_summary}")
+        transcript = "\n".join(
+            f"{'用户' if item.get('role') == 'user' else '助手'}：{item.get('content', '')}"
+            for item in overflow_messages
+        )
+        if transcript:
+            parts.append(f"新增对话：\n{transcript}")
+        user_prompt = "\n\n".join(parts) if parts else "（暂无历史内容）"
+        try:
+            llm = self._get_llm()
+            response = llm.invoke([
+                SystemMessage(content=SUMMARY_SYSTEM_PROMPT),
+                HumanMessage(content=user_prompt),
+            ])
+            text = getattr(response, "content", str(response)).strip()
+            return text or (existing_summary or "")
+        except Exception as e:
+            logger.warning("[滚动摘要生成失败] memory_id=%s | %s", memory_id, e)
+            return existing_summary or ""
 
     def _save_history(self, memory_id: str, user_msg: str, assistant_msg: str):
         """保存一轮对话到 Redis"""
