@@ -112,9 +112,15 @@ langchain4j-techAgent-python/
 ### 会话数据流程
 
 - 成绩文档原文 + 解析记录 + chunk + 向量（Redis，key 含「年级+班级」桶前缀，桶内按考试名区分多份文档）
-- 聊天记忆（Redis List，`chat:memory:{memoryId}`，LRU 保留最近 20 轮）
+- 聊天记忆（Redis List，`chat:memory:{memoryId}`，保留最近 N 条原文，超出部分滚动摘要到 `...:summary`）
 - 桶分析器（多考试聚合）实例 + 混合检索引擎实例（进程内存，按桶映射；重启后从 Redis 惰性重建）
-- 全部数据支持一键删除 + TTL 自动过期（86400s）
+- 成绩数据永久保留（不设置过期，手动删除）；聊天记忆 TTL 由 `REDIS_TTL_SECONDS` 配置（默认 2592000s = 30 天）
+
+## 记忆架构
+
+- **短期记忆（对话上下文）**：按会话存在 `chat:memory:{memoryId}`（List，最近 N 条原文，`CHAT_HISTORY_TURNS` 默认 20 条 = 10 轮）；历史超过阈值时，把最旧的溢出部分交给 LLM 生成**滚动摘要**存入 `...:summary`，问答上下文 = 摘要 + 最近 N 轮原文；删除会话时聊天记忆与摘要一并清除。
+- **长期记忆（成绩知识库）**：按「年级+班级」桶存储原文 / 解析记录 / chunk / 向量，跨会话共享，问答通过 RAG 召回；删除文档/桶才清除。
+- **生命周期**：长期记忆（成绩知识库）**永久保留**，不设置过期，仅通过数据管理删除文档/桶清理；短期记忆（聊天记忆）TTL 由 `REDIS_TTL_SECONDS` 配置（默认 30 天），写入时刷新；会话列表在浏览器 localStorage，无过期。
 
 ## 当前接口说明
 
@@ -153,12 +159,13 @@ langchain4j-techAgent-python/
 - `memoryId`: 会话 ID
 - `message`: 用户问题
 - `grade`: 年级
-- `className`: 班级（检索与分析仅作用于该（年级+班级）桶）
+- `className`: 班级（可选；为空时范围为整个年级，支持跨班对比，检索合并该年级全部班级数据）
 
 功能：
 
 - ReAct Agent 自主调用工具获取分析数据
 - 数据含多次考试时，工具支持 `exam` 参数指定考试，支持跨考试对比
+- 多班级（全年级）范围下工具支持 `className` 参数指定班级，并新增 `compare_classes` 跨班对比
 - 非流式返回完整分析结果
 
 ### 4. 流式对话（SSE）
@@ -169,7 +176,7 @@ langchain4j-techAgent-python/
 - `memoryId`: 会话 ID
 - `message`: 用户问题
 - `grade`: 年级
-- `className`: 班级
+- `className`: 班级（可选；为空时范围为整个年级，支持跨班对比）
 
 功能：
 
@@ -213,6 +220,62 @@ langchain4j-techAgent-python/
 功能：
 
 - 删除整个（年级+班级）桶及其全部考试文档、向量数据与内存缓存
+
+### 8. Swagger 接口文档
+
+FastAPI 内置 Swagger UI 与 ReDoc，无需额外依赖，启动服务后直接访问：
+
+- Swagger UI（可交互调试）：`http://127.0.0.1:8000/docs`
+- ReDoc：`http://127.0.0.1:8000/redoc`
+- OpenAPI JSON：`http://127.0.0.1:8000/openapi.json`
+
+## 接口调用示例
+
+### 1. 上传成绩单（表单 multipart）
+
+```bash
+curl -X POST http://127.0.0.1:8000/ai/upload \
+  -F "memoryId=session-001" \
+  -F "grade=高一" \
+  -F "className=3班" \
+  -F "examName=期中考试" \
+  -F "file=@高一3班期中.xlsx"
+```
+
+成功响应示例：
+
+```json
+{
+  "success": true,
+  "message": "成绩单上传成功（10名学生），可在该班级会话中请求分析",
+  "textLength": 268,
+  "grade": "高一",
+  "className": "3班",
+  "examName": "期中考试",
+  "bucketId": "高一::3班"
+}
+```
+
+### 2. 单班问答
+
+```text
+GET /ai/chat?memoryId=session-001&message=各科平均分是多少&grade=高一&className=3班
+```
+
+### 3. 全年级跨班对比（className 留空）
+
+```text
+GET /ai/chat?memoryId=session-001&message=对比3班和5班的语文平均分&grade=高一
+```
+
+### 4. 数据管理
+
+```text
+GET    /ai/buckets
+DELETE /ai/document?grade=高一&className=3班&examName=期中考试
+DELETE /ai/bucket?grade=高一&className=3班
+DELETE /ai/session?memoryId=session-001
+```
 
 ## 配置说明
 
@@ -340,12 +403,12 @@ uvicorn main:app --reload
 - 服务启动时自动将旧版百分号编码 key（如 `%E4%BA%8C%E5%B9%B4%E7%BA%A7::5%E7%8F%AD`）迁移为可读格式（幂等，不丢失数据）
 
 ### 2. 聊天记忆缓存
-- 键前缀：`chat:memory:{memoryId}`
-- 以 List 存储每轮 user / assistant 消息
+- 键前缀：`chat:memory:{memoryId}`（List，每轮 user / assistant 消息）与 `chat:memory:{memoryId}:summary`（String，滚动摘要）
 
 数据生命周期：
 
-- 写入时自动设置 86400 秒 TTL
+- 成绩文档：永久保留，不设置过期（写入时 `PERSIST` 清除旧 TTL，启动时自动清除历史数据 TTL），仅手动删除
+- 聊天记忆：TTL 由 `REDIS_TTL_SECONDS` 配置（默认 2592000s = 30 天），写入时刷新
 - `/ai/document` 删除单份考试、`/ai/bucket` 删除整个桶，并同步清理内存对象
 - `/ai/session` 只清聊天记忆，不影响桶数据
 
@@ -363,9 +426,10 @@ uvicorn main:app --reload
 | `get_pianke_students` | 偏科学生检测（极差 >30 分） |
 | `get_weakest_subject` | 全班最弱科目 |
 | `compare_exams` | 跨考试对比（按科目 / 学生 / 班级整体，如期中 vs 期末） |
+| `compare_classes` | 跨班级对比（同考试名口径，各科指标 + 总分均分排名 + 单科排名） |
 | `get_chart_data` | 生成 ECharts 图表 JSON |
 
-说明：数据工具均支持可选 `exam` 参数（考试名称），未指定时默认使用最近一次上传的考试；检索片段会标注「年级班级·考试名」。
+说明：数据工具均支持可选 `exam` 参数（考试名称），未指定时默认使用最近一次上传的考试；多班级（全年级）范围下涉及班级的工具需通过 `className` 指定班级；检索片段会标注「年级班级·考试名」。
 
 系统提示词内置于 `ConsultantService`，核心约束：分析前必须先调用工具获取数据，严禁凭空编造。
 
