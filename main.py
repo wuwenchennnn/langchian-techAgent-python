@@ -27,8 +27,22 @@ if _settings.langsmith_api_key:
 # 创建FastAPI应用
 app = FastAPI(
     title="Langchain4j TechAgent",
-    description="教育分析 Agent - 学生成绩数据分析与建议",
-    version="0.0.1"
+    description="教育分析 Agent - 学生成绩数据分析与建议（按「年级 + 班级」隔离，支持多考试与跨班级对比）",
+    version="0.2.0",
+    openapi_tags=[
+        {
+            "name": "ai",
+            "description": (
+                "成绩分析相关接口：成绩单上传、对话问答（单班 / 全年级跨班）、"
+                "桶数据管理与会话清理。交互式调试请直接使用本页（Swagger UI）。"
+            ),
+        },
+    ],
+    swagger_ui_parameters={
+        "docExpansion": "none",
+        "defaultModelsExpandDepth": 2,
+        "persistAuthorization": True,
+    },
 )
 
 # 配置CORS

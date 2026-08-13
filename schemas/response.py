@@ -8,6 +8,18 @@ class ChatResponse(BaseModel):
     message: str
     data: Optional[str] = None
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "status": 1,
+                    "message": "成功",
+                    "data": "高一3班期末考试语文平均分 87.7 分，优秀率 80%……",
+                }
+            ]
+        }
+    }
+
 
 class UploadResponse(BaseModel):
     """上传文件响应模型"""
@@ -19,11 +31,35 @@ class UploadResponse(BaseModel):
     examName: str
     bucketId: str
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "success": True,
+                    "message": "成绩单上传成功（10名学生），可在该班级会话中请求分析",
+                    "textLength": 268,
+                    "grade": "高一",
+                    "className": "3班",
+                    "examName": "期中考试",
+                    "bucketId": "高一::3班",
+                }
+            ]
+        }
+    }
+
 
 class SessionResponse(BaseModel):
     """会话管理响应模型"""
     success: bool
     message: str
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"success": True, "message": "会话数据已清除"}
+            ]
+        }
+    }
 
 
 class DocumentInfo(BaseModel):
@@ -48,3 +84,30 @@ class BucketListResponse(BaseModel):
     """已有桶列表响应"""
     success: bool
     buckets: list[BucketInfo]
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "success": True,
+                    "buckets": [
+                        {
+                            "grade": "高一",
+                            "className": "3班",
+                            "bucketId": "高一::3班",
+                            "documents": [
+                                {
+                                    "examName": "期中考试",
+                                    "filename": "高一3班期中.xlsx",
+                                    "uploadedAt": "2026-08-10 15:30:19",
+                                    "textLength": 268,
+                                    "studentCount": 10,
+                                    "subjectCount": 3,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    }
