@@ -320,7 +320,7 @@ class ChartGenerator:
                 if bucket:
                     found = bucket.resolve_exam(exam)
                     if found:
-                        exam_name = found
+                        exam_name = self.analyzer.normalize_exam(c, found)
                         found_any = True
                         break
             if not found_any:
@@ -331,7 +331,8 @@ class ChartGenerator:
         class_analyzers = []
         for c in classes:
             bucket = self.analyzer.class_analyzer(c)
-            grade_analyzer = bucket.get_exam_analyzer(exam_name) if bucket else None
+            actual_exam = self.analyzer.class_actual_exam(c, exam_name) if bucket else None
+            grade_analyzer = bucket.get_exam_analyzer(actual_exam) if actual_exam else None
             if grade_analyzer is not None:
                 class_analyzers.append((c, grade_analyzer))
         if len(class_analyzers) < 2:

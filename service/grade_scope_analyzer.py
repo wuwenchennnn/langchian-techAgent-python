@@ -32,16 +32,34 @@ class GradeScopeAnalyzer:
     def class_analyzer(self, className: str) -> Optional[BucketAnalyzer]:
         return self._buckets.get(className)
 
+    def normalize_exam(self, class_name: str, exam_name: str) -> str:
+        """去掉考试名中的班级片段，用于跨班同名考试匹配（如 2026年3班期中考试 → 2026年期中考试）"""
+        exam_name = exam_name or ""
+        if class_name and class_name in exam_name:
+            return exam_name.replace(class_name, "", 1)
+        return exam_name
+
+    def class_actual_exam(self, class_name: str, normalized: str) -> Optional[str]:
+        """根据规范化考试名找到该班级实际存储的考试名"""
+        bucket = self._buckets.get(class_name)
+        if not bucket:
+            return None
+        for exam in bucket.list_exams():
+            if self.normalize_exam(class_name, exam) == normalized:
+                return exam
+        return None
+
     def common_exams(self) -> list[str]:
-        """至少两个班级都有的考试名称（按首个班级的上传顺序）"""
+        """至少两个班级都有的规范化考试名称（按首个班级的上传顺序）"""
         counts: dict[str, int] = {}
         order: list[str] = []
-        for bucket in self._buckets.values():
+        for class_name, bucket in self._buckets.items():
             for exam in bucket.list_exams():
-                if exam not in counts:
-                    counts[exam] = 0
-                    order.append(exam)
-                counts[exam] += 1
+                normalized = self.normalize_exam(class_name, exam)
+                if normalized not in counts:
+                    counts[normalized] = 0
+                    order.append(normalized)
+                counts[normalized] += 1
         return [exam for exam in order if counts[exam] >= 2]
 
     def latest_common_exam(self) -> Optional[str]:
@@ -52,8 +70,8 @@ class GradeScopeAnalyzer:
         best, best_count = None, -1
         for exam in sorted(common):
             count = sum(
-                1 for bucket in self._buckets.values()
-                if bucket.latest_exam() == exam
+                1 for class_name, bucket in self._buckets.items()
+                if self.normalize_exam(class_name, bucket.latest_exam() or "") == exam
             )
             if count > best_count:
                 best, best_count = exam, count
@@ -72,14 +90,14 @@ class GradeScopeAnalyzer:
         return selected
 
     def _resolve_exam_for_classes(self, class_names: list[str], exam: str) -> Optional[str]:
-        """指定考试时返回任一班级可解析到的名称；缺省返回共同考试中的最近一次"""
+        """指定考试时返回规范化名称；缺省返回共同考试中的最近一次"""
         exam = (exam or "").strip()
         if exam:
             for c in class_names:
                 bucket = self._buckets[c]
                 found = bucket.resolve_exam(exam)
                 if found:
-                    return found
+                    return self.normalize_exam(c, found)
             return None
         return self.latest_common_exam()
 
@@ -132,7 +150,8 @@ class GradeScopeAnalyzer:
         available = []
         for c in selected:
             bucket = self._buckets[c]
-            grade_analyzer = bucket.get_exam_analyzer(exam_name)
+            actual_exam = self.class_actual_exam(c, exam_name)
+            grade_analyzer = bucket.get_exam_analyzer(actual_exam) if actual_exam else None
             if grade_analyzer is not None:
                 available.append((c, grade_analyzer))
         if len(available) < 2:
