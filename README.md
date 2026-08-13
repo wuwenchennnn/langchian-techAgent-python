@@ -134,7 +134,7 @@ langchain4j-techAgent-python/
 - `memoryId`: 会话 ID
 - `grade`: 年级（如：高一）
 - `className`: 班级（如：3班）
-- `examName`: 考试名称（如：期中考试 / 期末，同一（年级+班级）可上传多份）
+- `examName`: 考试名称（前端按「年份 + 班级 + 考试类型」自动拼成，如 `2026年3班期中考试`；同一（年级+班级）可上传多份）
 - `file`: PDF / Excel（`.xlsx` / `.xls`）文件
 
 功能：
@@ -142,6 +142,7 @@ langchain4j-techAgent-python/
 - 上传并解析文档（自动识别格式），按（年级+班级+考试名）存储
 - 同一（年级+班级+考试名）重复上传视为替换该份考试，不影响同桶其他考试
 - 结构化分析 + 文本/记录/向量存入 Redis，并重建桶内聚合检索源
+
 
 ### 2. 已有数据列表
 `GET /ai/buckets`
@@ -238,7 +239,7 @@ curl -X POST http://127.0.0.1:8000/ai/upload \
   -F "memoryId=session-001" \
   -F "grade=高一" \
   -F "className=3班" \
-  -F "examName=期中考试" \
+  -F "examName=2026年3班期中考试" \
   -F "file=@高一3班期中.xlsx"
 ```
 
