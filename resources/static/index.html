@@ -613,6 +613,18 @@ async function doUpload() {
         toast('请选择成绩单文件', 'error');
         return;
     }
+    // 校验文件名与下拉选择是否对应，防止选错考试名称（文件名规范：2026一年级5班期中考试.xlsx）
+    const baseName = (uploadFile.name || '').replace(/\.[^.]+$/, '');
+    const mismatches = [];
+    if (!baseName.includes(year)) mismatches.push(`年份「${year}」`);
+    if (!baseName.includes(className)) mismatches.push(`班级「${className}」`);
+    if (!baseName.includes(examType)) mismatches.push(`考试类型「${examType}」`);
+    const gradeInName = GRADE_OPTIONS.find(g => g && baseName.includes(g));
+    if (gradeInName && gradeInName !== grade) mismatches.push(`年级「${gradeInName}」与所选「${grade}」不一致`);
+    if (mismatches.length) {
+        toast(`文件名「${uploadFile.name}」与所选考试不匹配：${mismatches.join('、')}。请检查文件名或重新选择。`, 'error');
+        return;
+    }
     const formData = new FormData();
     formData.append('file', uploadFile);
     formData.append('memoryId', generateId());
